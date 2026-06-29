@@ -64,9 +64,9 @@ IdealFlexLoad = FlexLoad(
 )
 
 MetricCoefficients = [
-    4, #A
-    1, #B
-    2, #C
+    5, #A
+    1.75, #B
+    0.25, #C
     3, #D
     5, #E
     5, #F
