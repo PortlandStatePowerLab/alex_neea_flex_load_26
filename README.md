@@ -3,7 +3,8 @@
 Excel and Python based calculators to find the ability of a flex load to contribute to different grid services. Currently includes a Python version of the FLS for Energy Service and the VBA code for importing XML flex load files to Excel for the Regulation calculator.
 
 ## Contributors
-List of collaborators who helped you in this project
+Thomas: [Thomas' Repository](https://github.com/PortlandStatePowerLab/thomas_neea_flex_load_26)
+Othman: [Othman's Repository](https://github.com/PortlandStatePowerLab/othman_neea_flex_load_calculator_26)
 
 ## Short Description
 
