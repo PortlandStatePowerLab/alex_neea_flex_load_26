@@ -1,0 +1,33 @@
+<FlexLoad>
+    <Name>Test</Name>
+    <Version>1.0</Version>
+
+    <Capacity>
+        <UpRegCap>75</UpRegCap>
+        <DwnRegCap>75</DwnRegCap>
+        <UpEnergyDur>300</UpEnergyDur>
+        <DwnEnergyDur>300</DwnEnergyDur>
+    </Capacity>
+
+    <Performance>
+        <ResponseTime>5</ResponseTime>
+        <Latency>5</Latency>
+        <CntrlInt>5</CntrlInt>
+    </Performance>
+
+    <Control>
+        <Sched>Yes</Sched>
+        <App>Yes</App>
+        <Wireless>Yes</Wireless>
+        <ToU>Yes</ToU>
+    </Control>
+
+    <Interop>
+        <Standards>Yes</Standards>
+        <UCM>Yes</UCM>
+        <Compliant>Yes</Compliant>
+        <DataCnfrmnt>0.5</DataCnfrmnt>
+        <ShiftCnfrmnt>0.5</ShiftCnfrmnt>
+    </Interop>
+
+</FlexLoad>
