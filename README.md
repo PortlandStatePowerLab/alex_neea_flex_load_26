@@ -4,6 +4,7 @@ Excel and Python based calculators to find the ability of a flex load to contrib
 
 ## Contributors
 Thomas: [Thomas' Repository](https://github.com/PortlandStatePowerLab/thomas_neea_flex_load_26)
+
 Othman: [Othman's Repository](https://github.com/PortlandStatePowerLab/othman_neea_flex_load_calculator_26)
 
 ## Short Description
