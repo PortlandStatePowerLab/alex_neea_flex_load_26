@@ -1,6 +1,7 @@
-# import scipy
+# As of 7/7/26, this code is the same as the separate file versions (FLS, energyserviceFLS, flexload, and importflexload)
+# EXCEPT for the readFlexLoad function, which expects a file consisting only of the flex load values - no descriptions/lables - separated by new lines
+
 from dataclasses import dataclass
-# import csv
 
 @dataclass
 class ShiftPotential:
