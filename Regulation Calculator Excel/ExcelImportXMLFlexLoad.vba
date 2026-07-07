@@ -1,8 +1,10 @@
 Option Explicit
-Private Const SUPPORTED_VERSION As String = "1.0"
+Private Const SUPPORTED_VERSION As String = "1.0" 
+'allows for future versions of the XML flex load structure to be created'
 
 Sub ImportDevice()
 
+    'open xml file'
     Dim xmlDoc As Object
     
     Dim fd As FileDialog
@@ -12,7 +14,8 @@ Sub ImportDevice()
     Dim SelectedFile As String
     
     With fd
-    
+
+    'Add filters so user can only choose a single xml file'
     .Title = "Select an xml file for the flex load you would like to study"
     .Filters.Clear
     .Filters.Add "XML Files", "*.xml"
@@ -26,13 +29,15 @@ Sub ImportDevice()
         
         xmlDoc.async = False
         xmlDoc.validateOnParse = False
-        
+
+        'Check if xml file loaded'
         Dim FileLoaded As Boolean
         
         FileLoaded = xmlDoc.Load(SelectedFile)
         
         If FileLoaded = True Then
-            
+
+            'check XML file version for compatablity'
             Dim XMLVersion As String
             XMLVersion = GetXMLValue(xmlDoc, "FlexLoad/Version")
             
@@ -44,6 +49,7 @@ Sub ImportDevice()
                 Exit Sub
                 
             Else
+                'fill all of the flex load characteristic inputs'
                 LoadXMLValue xmlDoc, "FLName", "FlexLoad/Name"
                 
                 LoadXMLValue xmlDoc, "UpRegCap", "FlexLoad/Capacity/UpRegCap"
@@ -71,7 +77,8 @@ Sub ImportDevice()
                 
         
         Else
-            MsgBox "The file didn't load :("
+            'Error message'
+            MsgBox "The XML file didn't load"
         
         End If
     
@@ -86,6 +93,7 @@ Sub ImportDevice()
 
 End Sub
 
+'Function to get the flex load values from the XML file'
 Private Function GetXMLValue(xmlDoc As Object, NodePath As String) As String
 
     Dim Node As Object
@@ -100,6 +108,7 @@ Private Function GetXMLValue(xmlDoc As Object, NodePath As String) As String
 
 End Function
 
+'Function to set the Excel flex load cells'
 Private Sub LoadXMLValue(xmlDoc As Object, _
                          CellName As String, _
                          NodePath As String)
