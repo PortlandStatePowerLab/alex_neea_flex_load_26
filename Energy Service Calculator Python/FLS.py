@@ -1,4 +1,5 @@
-
+# Supplemental file for Energy Service FLS calculation
+# Calculates FLS from coefficients and normalized flex load
 
 def getShiftScore(coefficients, NormFlexLoad):
     shiftScore = (
