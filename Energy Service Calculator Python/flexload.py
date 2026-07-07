@@ -1,5 +1,8 @@
+# File containing definition of class FlexLoad
+# with subclasses ShiftPotential, Storage, Controllability, and Interoperability
+# Also contains definition of an ideal flex load
+
 from dataclasses import dataclass
-# import csv
 
 @dataclass
 class ShiftPotential:
