@@ -1,3 +1,7 @@
+# NOT WORKING
+# function readflexload(), for importing flex load values from an xml file, is currently (7/7/26) unimplimented
+# Allows user to manually import flex load characteristics or import an xml file with the flex load characteristics
+
 import flexload as fl
 
 def inputFlexLoad():
