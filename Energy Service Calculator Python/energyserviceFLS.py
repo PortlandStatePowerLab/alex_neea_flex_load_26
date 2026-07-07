@@ -1,8 +1,14 @@
-# import scipy
+# Main code for calculating Energy Service FLS
+# Relies on:
+#     FLS.py
+#     flexload.py
+#     importflexload.py -- currently not working because xml import function is unimplimented (7/7/26)
+
 import flexload as fl
 import FLS as fls
 import importflexload as impfl
 
+# Set initial metric coefficients - can be changed by user
 MetricCoefficients = [
     5, #A
     1.75, #B
