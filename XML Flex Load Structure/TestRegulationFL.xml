@@ -10,13 +10,11 @@ Currently only usable for Regulation calculator -->
     <Capacity>
         <UpRegCap>75</UpRegCap>
         <DwnRegCap>75</DwnRegCap>
-        <UpEnergyDur>300</UpEnergyDur>
-        <DwnEnergyDur>300</DwnEnergyDur>
+        <ContRegDur>60</ContRegDur>
     </Capacity>
 
     <Performance>
         <ResponseTime>5</ResponseTime>
-        <Latency>5</Latency>
         <CntrlInt>5</CntrlInt>
     </Performance>
 
