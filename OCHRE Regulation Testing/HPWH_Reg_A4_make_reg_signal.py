@@ -93,6 +93,7 @@ def save_signal(time, signal, output_folder, filename):
     })
 
     df.to_csv(output_folder / filename, index=False)
+    print()
 
     return df
 
