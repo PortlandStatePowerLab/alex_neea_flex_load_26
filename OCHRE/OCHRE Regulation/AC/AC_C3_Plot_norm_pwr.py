@@ -15,7 +15,7 @@ import pandas as pd
 # Must match ``filename`` in AC_B2_EnergySched_LoadShaping.
 INPUT_FILE_ROOT = "AC_Test_PID_1.0_0.8_1.0"
 MIN_BASELINE_KW = 0.01
-PLOT_POINTS = 500
+PLOT_POINTS = 2000
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 fl_dir = os.path.dirname(script_dir)
@@ -23,10 +23,10 @@ working_dir = os.path.dirname(fl_dir)
 ready_data_dir = os.path.join(working_dir, "Ready_data", INPUT_FILE_ROOT)
 
 baseline_file = os.path.join(
-    ready_data_dir, f"{INPUT_FILE_ROOT}_baseline_power.csv"
+    ready_data_dir, f"{INPUT_FILE_ROOT}_baseline_AC_power.csv"
 )
 controlled_file = os.path.join(
-    ready_data_dir, f"{INPUT_FILE_ROOT}_controlled_power.csv"
+    ready_data_dir, f"{INPUT_FILE_ROOT}_controlled_AC_power.csv"
 )
 reg_sig_file = os.path.join(working_dir, "RegA Signal", "rega_filtered.csv")
 plot_file = os.path.join(
