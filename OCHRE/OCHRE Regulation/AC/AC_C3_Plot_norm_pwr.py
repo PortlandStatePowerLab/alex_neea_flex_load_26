@@ -47,8 +47,8 @@ def load_regulation_signal():
     """Load the one-day signal segment corresponding to C2's plot."""
     signal = pd.read_csv(reg_sig_file, parse_dates=["Timestamp"])
     signal = signal.rename(columns={"Timestamp": "Time", "Signal": "signal"})
-    first_date = signal["Time"].dt.normalize().iloc[0]
-    signal = signal[signal["Time"].dt.normalize() == first_date].copy()
+    signal_date = signal["Time"].dt.normalize().iloc[-1]
+    signal = signal[signal["Time"].dt.normalize() == signal_date].copy()
     return signal[["Time", "signal"]]
 
 
