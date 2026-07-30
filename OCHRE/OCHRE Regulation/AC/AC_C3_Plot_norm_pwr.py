@@ -66,10 +66,8 @@ def main():
 
     # A ratio is undefined when the baseline AC fleet is off.  Keep those
     # points as NaN so Matplotlib leaves a gap rather than plotting a spike.
-    valid_baseline = power["baseline_ac_kw"].where(
-        power["baseline_ac_kw"] >= MIN_BASELINE_AC_KW
-    )
-    power["controlled_over_baseline"] = power["controlled_ac_kw"] / valid_baseline
+    
+    power["controlled_minus_baseline"] = power["controlled_ac_kw"] - power["baseline_ac_kw"]
 
     signal = load_regulation_signal()
 
@@ -82,15 +80,14 @@ def main():
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(
         power["Time"].tail(PLOT_POINTS),
-        power["controlled_over_baseline"].tail(PLOT_POINTS),
-        label="controlled / baseline AC power",
+        power["controlled_minus_baseline"].tail(PLOT_POINTS),
+        label="controlled - baseline AC power",
         color="green",
-        linestyle="--",
     )
     ax.axhline(1.0, color="black", linewidth=1, alpha=0.6, label="baseline ratio")
     ax.set_title("Normalized Average AC Cooling Power per Household")
     ax.set_xlabel("Time")
-    ax.set_ylabel("Controlled / Baseline AC Power")
+    ax.set_ylabel("Controlled - Baseline AC Power")
 
     ax2 = ax.twinx()
     ax2.plot(
