@@ -1,170 +1,117 @@
+"""Plot controlled AC power normalized by baseline AC power.
+
+Run AC_C1_parse_OCHRE_data_final.py and AC_C2_Plot_Totpower_WHpower.py
+first.  This script reads the same AC-power CSVs as C2, then writes a
+separate normalized-power plot without overwriting C2's plots.
 """
-#Author: Thomas Metzler
-#6/22/2026
 
-#Creates plots for the average water heater and total household power consumption, comparing baseline and controlled
-#Works for HPWH 
-"""
-
-
-import pandas as pd
 import os
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
+
 import matplotlib.dates as mdates
-import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
 
-
-#Copy path naming from HPWH_parse_OCHRE_data_final.py for consistency
-script_dir = os.path.dirname(os.path.abspath(__file__))
-fl_dir = os.path.dirname(script_dir) 
-working_dir = os.path.dirname(fl_dir)  
 
 # Must match ``filename`` in AC_B2_EnergySched_LoadShaping.
-input_file_root = "AC_Test_PID_1.0_0.8_1.0"
+INPUT_FILE_ROOT = "AC_Test_PID_1.0_0.8_1.0"
+MIN_BASELINE_AC_KW = 0.01
+PLOT_POINTS = 500
 
-input_file_name1 = input_file_root + "_baseline"
-input_file_name2 = input_file_root + "_controlled"
-input_file_1  = os.path.join(working_dir, input_file_name1 +".csv")
-input_file_2  = os.path.join(working_dir, input_file_name2 +".csv")
+script_dir = os.path.dirname(os.path.abspath(__file__))
+fl_dir = os.path.dirname(script_dir)
+working_dir = os.path.dirname(fl_dir)
+ready_data_dir = os.path.join(working_dir, "Ready_data", INPUT_FILE_ROOT)
 
-output_append_ACpower = "_AC_power"
-output_file_name1 = input_file_name1 + output_append_ACpower + ".csv"
-output_file_name2 = input_file_name2 + output_append_ACpower + ".csv"
-folder_path = os.path.join(working_dir, "Ready_data", input_file_root)
-output_file_1 = os.path.join(working_dir, "Ready_data", input_file_root,output_file_name1)
-output_file_2 = os.path.join(working_dir, "Ready_data", input_file_root, output_file_name2)
-
-output_append_totpower = "_total_power"
-output_file_name3 = input_file_name1 + output_append_totpower + ".csv"
-output_file_name4 = input_file_name2 + output_append_totpower + ".csv"
-output_file_3 = os.path.join(working_dir, "Ready_data", input_file_root, output_file_name3)
-output_file_4 = os.path.join(working_dir, "Ready_data", input_file_root, output_file_name4)
-
-photo_file_1 = os.path.join(working_dir, "Ready_data", input_file_root, input_file_root + "_AC_power_plot.png")
-photo_file_2 = os.path.join(working_dir, "Ready_data", input_file_root, input_file_root + "_Total_power_plot.png")
-
-# AC_B2 writes the filtered signal beside the source signal, under
-# ``working_dir``.  Reading it from ``fl_dir`` used an unrelated, stale file.
+baseline_file = os.path.join(
+    ready_data_dir, f"{INPUT_FILE_ROOT}_baseline_AC_power.csv"
+)
+controlled_file = os.path.join(
+    ready_data_dir, f"{INPUT_FILE_ROOT}_controlled_AC_power.csv"
+)
 reg_sig_file = os.path.join(working_dir, "RegA Signal", "rega_filtered.csv")
+plot_file = os.path.join(
+    ready_data_dir, f"{INPUT_FILE_ROOT}_normalized_AC_power_plot.png"
+)
 
 
-#plot the data and save the plot
-def plot_data(baseline_file, controlled_file, title, photo_file, ax):
-    # Load the CSV file
-    df_base = pd.read_csv(baseline_file, index_col=0)  # Assuming the first column is the index
-    df_con= pd.read_csv(controlled_file, index_col=0)  # Assuming the first column is the index
+def average_power_by_time(csv_file, column_name):
+    """Return the per-home average AC power with a usable time column."""
+    data = pd.read_csv(csv_file, index_col=0)
+    average = data.mean(axis=0, numeric_only=True)
+    result = average.rename(column_name).rename_axis("Time").reset_index()
+    result["Time"] = pd.to_datetime(result["Time"])
+    return result
 
-    # Each row is one home.  Average the homes directly instead of appending
-    # an ``Average`` row to the input CSV on every plot run.
-    transposed_df_base = df_base.mean(axis=0, numeric_only=True)
-    transposed_df_con = df_con.mean(axis=0, numeric_only=True)
-    
-    #Switch to dataframe and reset index to have time as a column
-    df_base = pd.DataFrame (transposed_df_base)
-    df_con = pd.DataFrame (transposed_df_con)
-    
-    df_base.index = df_base.index.str.replace('Home', 'Time')
-    df_con.index = df_con.index.str.replace('Home', 'Time')
 
-    df_base = df_base.reset_index ()
-    # change columns names:
-    df_base.columns = ['Time', 'baseline']
+def load_regulation_signal():
+    """Load the one-day signal segment corresponding to C2's plot."""
+    signal = pd.read_csv(reg_sig_file, parse_dates=["Timestamp"])
+    signal = signal.rename(columns={"Timestamp": "Time", "Signal": "signal"})
+    first_date = signal["Time"].dt.normalize().iloc[0]
+    signal = signal[signal["Time"].dt.normalize() == first_date].copy()
+    return signal[["Time", "signal"]]
 
-    df_con = df_con.reset_index ()
-    # change columns names:
-    df_con.columns = ['Time', 'controlled']
 
-    # convert time column to a usable datetime fomat
-    df_reg_sig = pd.read_csv(
-            reg_sig_file,
-            parse_dates=["Timestamp"]
+def main():
+    for required_file in (baseline_file, controlled_file, reg_sig_file):
+        if not os.path.isfile(required_file):
+            raise FileNotFoundError(
+                f"Required input was not found: {required_file}\n"
+                "Run C1 and C2 with the same INPUT_FILE_ROOT before C3."
+            )
+
+    baseline = average_power_by_time(baseline_file, "baseline_ac_kw")
+    controlled = average_power_by_time(controlled_file, "controlled_ac_kw")
+    power = baseline.merge(controlled, on="Time", how="inner")
+
+    # A ratio is undefined when the baseline AC fleet is off.  Keep those
+    # points as NaN so Matplotlib leaves a gap rather than plotting a spike.
+    valid_baseline = power["baseline_ac_kw"].where(
+        power["baseline_ac_kw"] >= MIN_BASELINE_AC_KW
+    )
+    power["controlled_over_baseline"] = power["controlled_ac_kw"] / valid_baseline
+
+    signal = load_regulation_signal()
+
+    # C2 compares only clock time, so do the same for an aligned overlay.
+    for frame in (power, signal):
+        frame["Time"] = pd.to_datetime(
+            frame["Time"].dt.strftime("1900-01-01 %H:%M:%S")
         )
-    
-    df_reg_sig.rename(
-        columns={
-            "Timestamp":"Time",
-            "Signal":"signal"
-        },
-        inplace=True
-    )
-    # AC_B2 simulates a warm-up day and then retains one day of results.
-    # The exported signal contains both simulation days, so keep the first
-    # 24-hour signal segment instead of plotting the same clock times twice.
-    signal_date = df_reg_sig['Time'].dt.normalize().iloc[0]
-    df_reg_sig = df_reg_sig[
-        df_reg_sig['Time'].dt.normalize() == signal_date
-    ].copy()
 
-    # convert time column to a usable datetime fomat
-    for df in [df_base, df_con, df_reg_sig]:
-        df['Time'] = pd.to_datetime(df['Time'])
-        df['Time'] = pd.to_datetime(df['Time'].dt.strftime("1900-01-01 %H:%M:%S"))
-    # df_reg_sig['Time'] = df_reg_sig['Time'].time()
-    # print(df_base["Time"].min())
-    # print(df_base["Time"].max())
-
-    # print(df_reg_sig["Time"].min())
-    # print(df_reg_sig["Time"].max())
-
-    # print("Baseline:", len(df_base))
-    # print("Controlled:", len(df_con))
-    # print("RegA:", len(df_reg_sig))
-
-    MIN_BASELINE_AC_KW = 0.01
-
-    df_plot = df_base.merge(df_con, on="Time", how="inner")
-
-    df_plot["normalized_controlled"] = (
-        df_plot["controlled"] /
-        df_plot["baseline"].where(df_plot["baseline"] >= MIN_BASELINE_AC_KW)
-    )
-
-    #plot
     fig, ax = plt.subplots(figsize=(8, 5))
-
-    ax.plot(df_plot['Time'].tail(500),
-            df_plot['normalized_controlled'].tail(500),
-            label='normalized controlled',
-            color='green',
-            linestyle='--')
+    ax.plot(
+        power["Time"].tail(PLOT_POINTS),
+        power["controlled_over_baseline"].tail(PLOT_POINTS),
+        label="controlled / baseline AC power",
+        color="green",
+        linestyle="--",
+    )
+    ax.axhline(1.0, color="black", linewidth=1, alpha=0.6, label="baseline ratio")
+    ax.set_title("Normalized Average AC Cooling Power per Household")
+    ax.set_xlabel("Time")
+    ax.set_ylabel("Controlled / Baseline AC Power")
 
     ax2 = ax.twinx()
-
-    ax2.plot(df_reg_sig['Time'].tail(500),
-            df_reg_sig['signal'].tail(500),
-            label='regulation signal',
-            color='mediumorchid',
-            linestyle=':')
-    # Customize and display
-    ax.set_title(title)
-    ax.set_xlabel('Time')
-    ax.set_ylabel('Power (kW)')
-    # ax.legend() # Displays labels properly
-    # ax.set_xlim(0, 24)
-    # ax.set_xticks([0,6,12,18,24])
+    ax2.plot(
+        signal["Time"].tail(PLOT_POINTS),
+        signal["signal"].tail(PLOT_POINTS),
+        label="regulation signal",
+        color="mediumorchid",
+        linestyle=":",
+    )
     ax2.set_ylabel("Normalized Regulation Signal")
     ax2.set_ylim(-1.1, 1.1)
 
     lines1, labels1 = ax.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
-
-    ax.legend(
-        lines1 + lines2,
-        labels1 + labels2,
-        loc="upper right"
-    )
-
-
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+    ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
     ax.xaxis.set_major_locator(mdates.HourLocator(interval=4))
-
     fig.autofmt_xdate()
+    fig.savefig(plot_file, dpi=300, bbox_inches="tight")
+    plt.show()
 
-    plt.savefig(photo_file, dpi=300, bbox_inches='tight')  # Save the figure
 
-plot_data(output_file_1, output_file_2, 'Average AC Cooling Power per Household', photo_file_1, "ax1")
-plot_data(output_file_3, output_file_4, 'Average Total Power Consumption per Household', photo_file_2, "ax2")
-
-#Show plot at the end so it doesn't overwrite the previous plot
-plt.show()
+if __name__ == "__main__":
+    main()
