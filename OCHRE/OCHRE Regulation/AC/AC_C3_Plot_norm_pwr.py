@@ -1,4 +1,4 @@
-"""Plot controlled AC power normalized by baseline AC power.
+"""Plot controlled power normalized by baseline power.
 
 Run AC_C1_parse_OCHRE_data_final.py and AC_C2_Plot_Totpower_WHpower.py
 first.  This script reads the same AC-power CSVs as C2, then writes a
@@ -14,7 +14,7 @@ import pandas as pd
 
 # Must match ``filename`` in AC_B2_EnergySched_LoadShaping.
 INPUT_FILE_ROOT = "AC_Test_PID_1.0_0.8_1.0"
-MIN_BASELINE_AC_KW = 0.01
+MIN_BASELINE_KW = 0.01
 PLOT_POINTS = 500
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -23,19 +23,19 @@ working_dir = os.path.dirname(fl_dir)
 ready_data_dir = os.path.join(working_dir, "Ready_data", INPUT_FILE_ROOT)
 
 baseline_file = os.path.join(
-    ready_data_dir, f"{INPUT_FILE_ROOT}_baseline_AC_power.csv"
+    ready_data_dir, f"{INPUT_FILE_ROOT}_baseline_power.csv"
 )
 controlled_file = os.path.join(
-    ready_data_dir, f"{INPUT_FILE_ROOT}_controlled_AC_power.csv"
+    ready_data_dir, f"{INPUT_FILE_ROOT}_controlled_power.csv"
 )
 reg_sig_file = os.path.join(working_dir, "RegA Signal", "rega_filtered.csv")
 plot_file = os.path.join(
-    ready_data_dir, f"{INPUT_FILE_ROOT}_normalized_AC_power_plot.png"
+    ready_data_dir, f"{INPUT_FILE_ROOT}_normalized_power_plot.png"
 )
 
 
 def average_power_by_time(csv_file, column_name):
-    """Return the per-home average AC power with a usable time column."""
+    """Return the per-home average power with a usable time column."""
     data = pd.read_csv(csv_file, index_col=0)
     average = data.mean(axis=0, numeric_only=True)
     result = average.rename(column_name).rename_axis("Time").reset_index()
@@ -60,14 +60,14 @@ def main():
                 "Run C1 and C2 with the same INPUT_FILE_ROOT before C3."
             )
 
-    baseline = average_power_by_time(baseline_file, "baseline_ac_kw")
-    controlled = average_power_by_time(controlled_file, "controlled_ac_kw")
+    baseline = average_power_by_time(baseline_file, "baseline_kw")
+    controlled = average_power_by_time(controlled_file, "controlled_kw")
     power = baseline.merge(controlled, on="Time", how="inner")
 
-    # A ratio is undefined when the baseline AC fleet is off.  Keep those
+    # A ratio is undefined when the baseline fleet is off.  Keep those
     # points as NaN so Matplotlib leaves a gap rather than plotting a spike.
     
-    power["controlled_minus_baseline"] = power["controlled_ac_kw"] - power["baseline_ac_kw"]
+    power["controlled_minus_baseline"] = power["controlled_kw"] - power["baseline_kw"]
 
     signal = load_regulation_signal()
 
@@ -81,13 +81,13 @@ def main():
     ax.plot(
         power["Time"].tail(PLOT_POINTS),
         power["controlled_minus_baseline"].tail(PLOT_POINTS),
-        label="controlled - baseline AC power",
+        label="controlled - baseline power",
         color="green",
     )
     # ax.axhline(1.0, color="black", linewidth=1, alpha=0.6, label="baseline ratio")
-    ax.set_title("Normalized Average AC Cooling Power per Household")
+    ax.set_title("Normalized Average Cooling Power per Household")
     ax.set_xlabel("Time")
-    ax.set_ylabel("Controlled - Baseline AC Power")
+    ax.set_ylabel("Controlled - Baseline Power")
 
     ax2 = ax.twinx()
     ax2.plot(
