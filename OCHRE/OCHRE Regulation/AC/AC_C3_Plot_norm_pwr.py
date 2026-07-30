@@ -84,7 +84,7 @@ def main():
         label="controlled - baseline AC power",
         color="green",
     )
-    ax.axhline(1.0, color="black", linewidth=1, alpha=0.6, label="baseline ratio")
+    # ax.axhline(1.0, color="black", linewidth=1, alpha=0.6, label="baseline ratio")
     ax.set_title("Normalized Average AC Cooling Power per Household")
     ax.set_xlabel("Time")
     ax.set_ylabel("Controlled - Baseline AC Power")
