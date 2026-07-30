@@ -114,21 +114,21 @@ def plot_data(baseline_file, controlled_file, title, photo_file, ax):
     #plot
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    ax.plot(df_base['Time'].tail(500),
-            df_base['baseline'].tail(500),
+    ax.plot(df_base['Time'],
+            df_base['baseline'],
             label='baseline',
             color='blue')
 
-    ax.plot(df_con['Time'].tail(500),
-            df_con['controlled'].tail(500),
+    ax.plot(df_con['Time'],
+            df_con['controlled'],
             label='controlled',
             color='orange',
             linestyle='--')
 
     ax2 = ax.twinx()
 
-    ax2.plot(df_reg_sig['Time'].tail(500),
-            df_reg_sig['signal'].tail(500),
+    ax2.plot(df_reg_sig['Time'],
+            df_reg_sig['signal'],
             label='regulation signal',
             color='mediumorchid',
             linestyle=':')
