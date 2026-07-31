@@ -118,4 +118,5 @@ def calculate_correlation():
     print(correlation)
 
 if __name__ == "__main__":
+    main()
     calculate_correlation()
