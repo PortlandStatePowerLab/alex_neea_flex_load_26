@@ -109,11 +109,10 @@ def main():
     fig.savefig(plot_file, dpi=300, bbox_inches="tight")
     plt.show()
 
-    try:
-        correlation = power["controlled_minus_baseline"].corr(signal["signal"])
-        print(f"Correlation between controlled-baseline and regulation signal: {correlation}")
-    except Exception as e:
-        print(f"Could not compute correlation: {e}")
+    merged = power.merge(signal, on="Time", how="inner")
+
+    correlation = merged["controlled_minus_baseline"].corr(merged["signal"])
+    print(correlation)
 
 if __name__ == "__main__":
     main()
