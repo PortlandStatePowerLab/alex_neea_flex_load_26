@@ -114,15 +114,8 @@ def main():
 
 def calculate_correlation():
     merged = power.merge(signal, on="Time", how="inner")
-
-    # Only use the last half
-    merged = merged.iloc[len(merged)//2:]
-
-    correlation = merged["controlled_minus_baseline"].corr(
-        merged["signal"]
-    )
-
-    return correlation
+    correlation = merged["controlled_minus_baseline"].tail(len(merged) // 2).corr(merged["signal"].tail(len(merged) // 2))
+    print(correlation)
 
 if __name__ == "__main__":
     calculate_correlation()
