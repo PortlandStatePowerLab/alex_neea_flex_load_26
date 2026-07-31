@@ -13,6 +13,7 @@ from ochre.utils.schedule import ALL_SCHEDULE_NAMES
 import concurrent.futures
 from pathlib import Path
 import ochre
+import numpy as np
 
 #########################################
 # USER SETTINGS
@@ -62,6 +63,15 @@ MIN_HOLD_STEPS = max(1, round(MIN_HOLD_MINUTES / t_res))
 SHED_MAX_TEMP_F = 76.0
 LOAD_MIN_TEMP_F = 71.0
 DEFAULT_LOAD_RESPONSE_KW = 3.0  # Used until a home's AC has run once.
+
+RESOLUTION = 0.1      # kW
+MAX_OVERSHOOT = 10.0  # kW
+TOLERANCE = int(round(0.5 / RESOLUTION))   # ±0.5 kW
+
+
+SWITCH_COST = 2.0
+WEAR_COST = 0.5
+COMFORT_COST = 1.0
 
 # HVAC control parameters (°F)
 Tcontrol_SHEDF = 76 
@@ -222,6 +232,30 @@ def _load_eligible(home):
     )
 
 
+def load_priority(home):
+
+    temp_margin = home.get("last_indoor_temp_c", TbaselineC) - TbaselineC
+
+    response = _estimated_response_kw(home, "LOAD")
+
+    return (
+        temp_margin * response,
+        -home.get("dispatch_count",0)
+    )
+
+def shed_priority(home):
+
+    response = _estimated_response_kw(home, "SHED")
+
+    temp_margin = TbaselineC - home.get("last_indoor_temp_c", TbaselineC)
+
+    return (
+        response,
+        temp_margin,
+        -home.get("dispatch_count",0)
+    )
+
+
 def dispatch_regulation_signal(fleet_data, reg_sig):
     """Dispatch eligible homes toward the requested kW regulation target.
 
@@ -258,6 +292,7 @@ def dispatch_regulation_signal(fleet_data, reg_sig):
                 # Its minimum hold has ended; re-evaluate it with the rest of
                 # the fleet instead of silently leaving an old command active.
                 home["override"] = "NORMAL"
+                home["dispatch_kw"] = 0.0
 
     if target_delta_kw == 0:
         return reg_sig, target_delta_kw, 0.0, 0, 0.0, 0.0
@@ -265,27 +300,217 @@ def dispatch_regulation_signal(fleet_data, reg_sig):
     if requested_mode == "SHED":
         candidates = [home for home in fleet_data if _shed_eligible(home)]
         # Turn off the largest operating units first, subject to comfort.
-        candidates.sort(key=lambda home: (-_estimated_response_kw(home, "SHED"), home.get("dispatch_count", 0)))
+        
     else:
         candidates = [home for home in fleet_data if _load_eligible(home)]
         # Pre-cool the warmest homes first.
-        candidates.sort(key=lambda home: (-home.get("last_indoor_temp_c", TbaselineC), home.get("dispatch_count", 0)))
-
-    available_kw = sum(_estimated_response_kw(home, requested_mode) for home in candidates)
+        
     dispatched_kw = retained_kw
-    dispatched_units = sum(home.get("override") == requested_mode for home in fleet_data)
+
+    dispatched_units = sum(
+        home.get("override") == requested_mode
+        for home in fleet_data
+    )
+
+    target = max(
+        0.0,
+        abs(target_delta_kw) - retained_kw
+    )
+
+    if target <= 0:
+        return (
+            reg_sig,
+            target_delta_kw,
+            retained_kw,
+            dispatched_units,
+            0.0,
+            retained_kw,
+        )
+
+    # ---------------------------------------------------
+    # Build candidate list
+    # ---------------------------------------------------
+
+    dispatch_candidates = []
 
     for home in candidates:
-        if dispatched_kw >= abs(target_delta_kw):
+
+        # Homes already dispatched and still within their hold period
+        # are already counted in retained_kw.
+        if home.get("override") == requested_mode:
+            continue
+
+        response = _estimated_response_kw(home, requested_mode)
+
+        if response <= 0:
+            continue
+
+        # -----------------------
+        # Cost Function
+        # -----------------------
+
+        cost = 0.0
+
+        # Prefer keeping homes in their current state
+        if home.get("override") != requested_mode:
+            cost += SWITCH_COST
+
+        # Spread wear across the fleet
+        cost += WEAR_COST * np.sqrt(home.get("dispatch_count", 0))
+
+        indoor = home.get("last_indoor_temp_c", TbaselineC)
+
+        if requested_mode == "LOAD":
+            margin = max(0.0, indoor - TbaselineC)
+        else:
+            margin = max(0.0, TbaselineC - indoor)
+
+        # Warm homes are cheaper to precool.
+        # Cool homes are cheaper to shed.
+        cost += COMFORT_COST * np.exp(-margin)
+
+        dispatch_candidates.append({
+            "home": home,
+            "response": response,
+            "weight": max(
+                1,
+                int(round(response / RESOLUTION))
+            ),
+            "cost": cost,
+        })
+
+    if not dispatch_candidates:
+
+        return (
+            reg_sig,
+            target_delta_kw,
+            retained_kw,
+            dispatched_units,
+            0.0,
+            retained_kw,
+        )
+
+    available_kw = sum(c["response"] for c in dispatch_candidates)
+
+    # ---------------------------------------------------
+    # Dynamic Programming
+    # ---------------------------------------------------
+
+    target_int = max(
+        0,
+        int(round(target / RESOLUTION))
+    )
+
+    limit = target_int + int(MAX_OVERSHOOT / RESOLUTION)
+
+    #
+    # states[power] =
+    # {
+    #     "cost": ...,
+    #     "parent": previous_power,
+    #     "candidate": candidate_index
+    # }
+    #
+    states = {
+        0: {
+            "cost": 0.0,
+            "parent": None,
+            "candidate": None,
+        }
+    }
+
+    for i, candidate in enumerate(dispatch_candidates):
+
+        weight = candidate["weight"]
+        cost = candidate["cost"]
+
+        current = list(states.items())
+
+        for power, info in current:
+
+            new_power = power + weight
+
+            if new_power > limit:
+                continue
+
+            new_cost = info["cost"] + cost
+
+            if (
+                new_power not in states
+                or new_cost < states[new_power]["cost"]
+            ):
+
+                states[new_power] = {
+                    "cost": new_cost,
+                    "parent": power,
+                    "candidate": i,
+                }
+
+    # ---------------------------------------------------
+    # Choose best solution
+    # ---------------------------------------------------
+
+    best_error = min(
+        abs(power - target_int)
+        for power in states
+    )
+
+    candidate_powers = [
+
+        power
+
+        for power in states
+
+        if abs(power - target_int)
+        <= best_error + TOLERANCE
+    ]
+
+    best_power = min(
+        candidate_powers,
+        key=lambda p: states[p]["cost"]
+    )
+
+    # ---------------------------------------------------
+    # Recover selected homes
+    # ---------------------------------------------------
+
+    selected = []
+
+    power = best_power
+
+    while power != 0:
+
+        state = states[power]
+
+        if state["candidate"] is None:
             break
-        response_kw = _estimated_response_kw(home, requested_mode)
+
+        selected.append(state["candidate"])
+
+        power = state["parent"]
+
+    selected.reverse()
+
+    # ---------------------------------------------------
+    # Dispatch homes
+    # ---------------------------------------------------
+
+    for idx in selected:
+
+        candidate = dispatch_candidates[idx]
+
+        home = candidate["home"]
+
+        response = candidate["response"]
+
         home["override"] = requested_mode
         home["lockout_steps"] = MIN_HOLD_STEPS
-        home["dispatch_kw"] = response_kw
-        home["dispatch_count"] += 1
-        dispatched_kw += response_kw
-        dispatched_units += 1
+        home["dispatch_kw"] = response
+        home["dispatch_count"] = home.get("dispatch_count", 0) + 1
 
+        dispatched_kw += response
+        dispatched_units += 1
+    
     return (reg_sig, target_delta_kw, dispatched_kw, dispatched_units,
             available_kw, retained_kw)
 
