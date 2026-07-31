@@ -111,7 +111,7 @@ def main():
 
     merged = power.merge(signal, on="Time", how="inner")
 
-    correlation = merged["controlled_minus_baseline"].corr(merged["signal"])
+    correlation = merged["controlled_minus_baseline"].tail(len(merged) // 2).corr(merged["signal"].tail(len(merged) // 2))
     print(correlation)
 
 if __name__ == "__main__":
