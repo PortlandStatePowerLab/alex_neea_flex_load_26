@@ -62,6 +62,7 @@ def main():
 
     baseline = average_power_by_time(baseline_file, "baseline_kw")
     controlled = average_power_by_time(controlled_file, "controlled_kw")
+    global power
     power = baseline.merge(controlled, on="Time", how="inner")
 
     # A ratio is undefined when the baseline fleet is off.  Keep those
@@ -69,6 +70,7 @@ def main():
     
     power["controlled_minus_baseline"] = power["controlled_kw"] - power["baseline_kw"]
 
+    global signal
     signal = load_regulation_signal()
 
     # C2 compares only clock time, so do the same for an aligned overlay.
@@ -109,10 +111,18 @@ def main():
     fig.savefig(plot_file, dpi=300, bbox_inches="tight")
     plt.show()
 
+
+def calculate_correlation():
     merged = power.merge(signal, on="Time", how="inner")
 
-    correlation = merged["controlled_minus_baseline"].corr(merged["signal"])
-    print(correlation)
+    # Only use the last half
+    merged = merged.iloc[len(merged)//2:]
+
+    correlation = merged["controlled_minus_baseline"].corr(
+        merged["signal"]
+    )
+
+    return correlation
 
 if __name__ == "__main__":
-    main()
+    calculate_correlation()
