@@ -52,7 +52,7 @@ t_res = 1  # minutes
 #
 # Set this no higher than the reliably available AC flexibility in the fleet.
 # The controller logs availability so this value can be calibrated after a run.
-REGULATION_CAPACITY_KW = 250.0
+REGULATION_CAPACITY_KW = 25
 
 # Dispatch and comfort settings.  With a one-minute timestep, five minutes is
 # a conservative initial minimum command duration.  A home is always released
