@@ -31,48 +31,48 @@ def set_regulation_capacity(value):
     with file.open("w") as f:
         f.write(text)
 
-# while True:
+while True:
 
-#     # ------------------------
-#     # Modify AC_B2 input
-#     # ------------------------
-#     set_regulation_capacity(capacity)
+    # ------------------------
+    # Modify AC_B2 input
+    # ------------------------
+    set_regulation_capacity(capacity)
 
-#     # ------------------------
-#     # Run the simulation
-#     # ------------------------
-#     subprocess.run(
-#         ["python", "AC_B2_EnergySched_LoadShaping"],
-#         check=True
-#     )
+    # ------------------------
+    # Run the simulation
+    # ------------------------
+    subprocess.run(
+        ["python", "AC_B2_EnergySched_LoadShaping"],
+        check=True
+    )
 
-#     subprocess.run(
-#         ["python", "AC_C1_parse_OCHRE_data_final.py"],
-#         check=True
-#     )
+    subprocess.run(
+        ["python", "AC_C1_parse_OCHRE_data_final.py"],
+        check=True
+    )
 
-#     subprocess.run(
-#         ["python", "AC_C2_Plot_Totpower_WHpower copy.py"],
-#         check=True
-#     )
+    subprocess.run(
+        ["python", "AC_C2_Plot_Totpower_WHpower copy.py"],
+        check=True
+    )
 
-#     # ------------------------
-#     # Compute correlation
-#     # ------------------------
-#     import AC_C3_Plot_norm_pwr as c3
-#     importlib.reload(c3)
+    # ------------------------
+    # Compute correlation
+    # ------------------------
+    import AC_C3_Plot_norm_pwr as c3
+    importlib.reload(c3)
 
-#     corr = c3.calculate_correlation()
+    corr = c3.calculate_correlation()
 
-#     print(capacity, corr)
+    print(capacity, corr)
 
-#     if abs(corr - TARGET) < TOL:
-#         break
+    if abs(corr - TARGET) < TOL:
+        break
 
-#     if corr < TARGET:
-#         capacity += step
-#     else:
-#         capacity -= step
-#         step /= 2
+    if corr < TARGET:
+        capacity += step
+    else:
+        capacity -= step
+        step /= 2
 
 set_regulation_capacity(capacity)
