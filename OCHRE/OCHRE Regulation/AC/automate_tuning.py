@@ -17,7 +17,7 @@ def set_regulation_capacity(value):
 
     from pathlib import Path
 
-    file = Path(__file__).parent / "AC_B2_EnergySched_LoadShaping.py"
+    file = Path("C:/Users/Owner/OneDrive/Desktop/NEEA/Github/alex_neea_flex_load_26/OCHRE/OCHRE Regulation/AC/AC_B2_EnergySched_LoadShaping.py")
 
     with file.open("r") as f:
         text = f.read()
@@ -42,17 +42,17 @@ while True:
     # Run the simulation
     # ------------------------
     subprocess.run(
-        ["python", "AC_B2_EnergySched_LoadShaping"],
+        ["python", "C:\\Users\\Owner\\OneDrive\\Desktop\\NEEA\\Github\\alex_neea_flex_load_26\\OCHRE\\OCHRE Regulation\\AC\\AC_B2_EnergySched_LoadShaping.py"],
         check=True
     )
 
     subprocess.run(
-        ["python", "AC_C1_parse_OCHRE_data_final.py"],
+        ["python", "C:\\Users\\Owner\\OneDrive\\Desktop\\NEEA\\Github\\alex_neea_flex_load_26\\OCHRE\\OCHRE Regulation\\AC\\AC_C1_parse_OCHRE_data_final.py"],
         check=True
     )
 
     subprocess.run(
-        ["python", "AC_C2_Plot_Totpower_WHpower copy.py"],
+        ["python", "C:\\Users\\Owner\\OneDrive\\Desktop\\NEEA\\Github\\alex_neea_flex_load_26\\OCHRE\\OCHRE Regulation\\AC\\AC_C2_Plot_Totpower_WHpower copy.py"],
         check=True
     )
 
@@ -74,5 +74,3 @@ while True:
     else:
         capacity -= step
         step /= 2
-
-set_regulation_capacity(capacity)
