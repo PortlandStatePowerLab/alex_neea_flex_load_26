@@ -11,13 +11,15 @@ TOL = 0.01
 capacity = 25
 step = 25
 
+base_path = "C:\\Users\\Hossein\\Documents\\GitHub\\alex_neea_flex_load_26\\OCHRE\\OCHRE Regulation\\AC\\"
+
 import re
 
 def set_regulation_capacity(value):
 
     from pathlib import Path
 
-    file = Path("C:/Users/Owner/OneDrive/Desktop/NEEA/Github/alex_neea_flex_load_26/OCHRE/OCHRE Regulation/AC/AC_B2_EnergySched_LoadShaping.py")
+    file = Path(base_path + "AC_B2_EnergySched_LoadShaping.py")
 
     with file.open("r") as f:
         text = f.read()
@@ -42,17 +44,17 @@ while True:
     # Run the simulation
     # ------------------------
     subprocess.run(
-        ["python", "C:\\Users\\Owner\\OneDrive\\Desktop\\NEEA\\Github\\alex_neea_flex_load_26\\OCHRE\\OCHRE Regulation\\AC\\AC_B2_EnergySched_LoadShaping.py"],
+        ["python", base_path + "AC_B2_EnergySched_LoadShaping.py"],
         check=True
     )
 
     subprocess.run(
-        ["python", "C:\\Users\\Owner\\OneDrive\\Desktop\\NEEA\\Github\\alex_neea_flex_load_26\\OCHRE\\OCHRE Regulation\\AC\\AC_C1_parse_OCHRE_data_final.py"],
+        ["python", base_path + "AC_C1_parse_OCHRE_data_final.py"],
         check=True
     )
 
     subprocess.run(
-        ["python", "C:\\Users\\Owner\\OneDrive\\Desktop\\NEEA\\Github\\alex_neea_flex_load_26\\OCHRE\\OCHRE Regulation\\AC\\AC_C2_Plot_Totpower_WHpower copy.py"],
+        ["python", base_path + "AC_C2_Plot_Totpower_WHpower copy.py"],
         check=True
     )
 

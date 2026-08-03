@@ -109,14 +109,17 @@ def main():
     ax.xaxis.set_major_locator(mdates.HourLocator(interval=4))
     fig.autofmt_xdate()
     fig.savefig(plot_file, dpi=300, bbox_inches="tight")
+
+    calculate_correlation()
     plt.show()
 
 
 def calculate_correlation():
     merged = power.merge(signal, on="Time", how="inner")
     correlation = merged["controlled_minus_baseline"].tail(len(merged) // 2).corr(merged["signal"].tail(len(merged) // 2))
+    print(f"Correlation between controlled-baseline power and regulation signal: {correlation:.4f}")
     return correlation
 
 if __name__ == "__main__":
     main()
-    calculate_correlation()
+    # calculate_correlation()
