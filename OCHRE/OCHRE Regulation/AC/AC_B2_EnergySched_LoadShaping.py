@@ -262,6 +262,16 @@ def dispatch_regulation_signal(fleet_data, reg_sig):
     Negative signals shed ACs that are currently on.  Positive signals
     pre-cool warm homes.  The selection uses physical state and estimated kW
     response rather than a fixed percentage of all homes.
+
+    Read the regulation request.
+    Keep any homes that are still required to remain on their previous command.
+    Determine how much additional regulation is needed.
+    Build a list of eligible homes, assigning each an estimated response and a dispatch cost.
+    Use dynamic programming to evaluate all achievable dispatch totals (up to the specified limit) and track 
+        the lowest-cost way to reach each total.
+    Choose the dispatch total that best matches the requested regulation while minimizing cost among near-equal matches.
+    Recover the corresponding set of homes.
+    Issue dispatch commands to those homes and return a summary of the fleet's response.
     """
     try:
         reg_sig = float(reg_sig)
