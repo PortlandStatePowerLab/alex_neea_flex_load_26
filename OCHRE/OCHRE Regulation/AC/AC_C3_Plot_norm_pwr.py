@@ -15,7 +15,7 @@ import pandas as pd
 # Must match ``filename`` in AC_B2_EnergySched_LoadShaping.
 INPUT_FILE_ROOT = "AC_Test_PID_1.0_0.8_1.0"
 MIN_BASELINE_KW = 0.01
-PLOT_POINTS = 2000
+PLOT_POINTS = 1000
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 fl_dir = os.path.dirname(script_dir)
