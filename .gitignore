@@ -226,6 +226,9 @@ OCHRE/OCHRE Regulation/AC/Results/
 Ready_data/
 AC All Portland Input Files/
 
-OCHRE\AC_Test_PID_1.0_0.8_1.0_baseline_power.csv
-OCHRE\AC_Test_PID_1.0_0.8_1.0_controlled_power.csv
-OCHRE\AC_Test_PID_1.0_0.8_1.0_VPP_Fleet_States.csv
+OCHRE/AC_Test_PID_1.0_0.8_1.0_baseline_power.csv
+OCHRE/AC_Test_PID_1.0_0.8_1.0_controlled_power.csv
+OCHRE/AC_Test_PID_1.0_0.8_1.0_VPP_Fleet_States.csv
+
+OCHRE/HPWH 50 Input Files/
+OCHRE/HPWH Filtered/
