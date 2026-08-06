@@ -112,52 +112,52 @@ def plot_data(baseline_file, controlled_file, title, photo_file, ax):
     # print("RegA:", len(df_reg_sig))
 
     #plot
-    fig, ax = plt.subplots(figsize=(8, 5))
+    # fig, ax = plt.subplots(figsize=(8, 5))
 
-    ax.plot(df_base['Time'],
-            df_base['baseline'],
-            label='baseline',
-            color='blue')
+    # ax.plot(df_base['Time'],
+    #         df_base['baseline'],
+    #         label='baseline',
+    #         color='blue')
 
-    ax.plot(df_con['Time'],
-            df_con['controlled'],
-            label='controlled',
-            color='orange',
-            linestyle='--')
+    # ax.plot(df_con['Time'],
+    #         df_con['controlled'],
+    #         label='controlled',
+    #         color='orange',
+    #         linestyle='--')
 
-    ax2 = ax.twinx()
+    # ax2 = ax.twinx()
 
-    ax2.plot(df_reg_sig['Time'],
-            df_reg_sig['signal'],
-            label='regulation signal',
-            color='mediumorchid',
-            linestyle=':')
-    # Customize and display
-    ax.set_title(title)
-    ax.set_xlabel('Time')
-    ax.set_ylabel('Power (kW)')
-    # ax.legend() # Displays labels properly
-    # ax.set_xlim(0, 24)
-    # ax.set_xticks([0,6,12,18,24])
-    ax2.set_ylabel("Normalized Regulation Signal")
-    ax2.set_ylim(-1.1, 1.1)
+    # ax2.plot(df_reg_sig['Time'],
+    #         df_reg_sig['signal'],
+    #         label='regulation signal',
+    #         color='mediumorchid',
+    #         linestyle=':')
+    # # Customize and display
+    # ax.set_title(title)
+    # ax.set_xlabel('Time')
+    # ax.set_ylabel('Power (kW)')
+    # # ax.legend() # Displays labels properly
+    # # ax.set_xlim(0, 24)
+    # # ax.set_xticks([0,6,12,18,24])
+    # ax2.set_ylabel("Normalized Regulation Signal")
+    # ax2.set_ylim(-1.1, 1.1)
 
-    lines1, labels1 = ax.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
+    # lines1, labels1 = ax.get_legend_handles_labels()
+    # lines2, labels2 = ax2.get_legend_handles_labels()
 
-    ax.legend(
-        lines1 + lines2,
-        labels1 + labels2,
-        loc="upper right"
-    )
+    # ax.legend(
+    #     lines1 + lines2,
+    #     labels1 + labels2,
+    #     loc="upper right"
+    # )
 
 
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-    ax.xaxis.set_major_locator(mdates.HourLocator(interval=4))
+    # ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+    # ax.xaxis.set_major_locator(mdates.HourLocator(interval=4))
 
-    fig.autofmt_xdate()
+    # fig.autofmt_xdate()
 
-    plt.savefig(photo_file, dpi=300, bbox_inches='tight')  # Save the figure
+    # plt.savefig(photo_file, dpi=300, bbox_inches='tight')  # Save the figure
 
 plot_data(output_file_1, output_file_2, 'Average AC Cooling Power per Household', photo_file_1, "ax1")
 plot_data(output_file_3, output_file_4, 'Average Total Power Consumption per Household', photo_file_2, "ax2")
