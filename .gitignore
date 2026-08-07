@@ -240,3 +240,9 @@ OCHRE/HPWH 80 Input Files/
 OCHRE/HPWH All Input Files/
 OCHRE/HPWH All Portland Input Files/
 OCHRE/HPWH Filtered/
+
+OCHRE/2025_All_630_1_45_1700_1_45_OS_baseline.csv
+OCHRE/2025_All_630_1_45_1700_1_45_OS_controlled.csv
+OCHRE/AC_Test_PID_1.0_0.8_1.0_baseline.csv
+OCHRE/AC_Test_PID_1.0_0.8_1.0_controlled.csv
+OCHRE/AC_Test_PID_1.0_0.8_1.0_VPP_Fleet_States.csv
