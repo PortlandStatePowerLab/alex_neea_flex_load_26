@@ -11,11 +11,13 @@ import pandas as pd
 import os
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
+import matplotlib.dates as mdates
 
 
 #Copy path naming from HPWH_parse_OCHRE_data_final.py for consistency
 script_dir = os.path.dirname(os.path.abspath(__file__))
-project_dir = os.path.dirname(script_dir)  
+project_dir = os.path.dirname(script_dir)
+working_dir = os.path.dirname(project_dir)  
 
 input_file_root = "2025_All_630_1_45_1700_1_45_OS"
 
@@ -40,6 +42,7 @@ output_file_4 = os.path.join(project_dir, "Ready_data", input_file_root, output_
 photo_file_1 = os.path.join(project_dir, "Ready_data", input_file_root, input_file_root + "_WH_power_plot.png")
 photo_file_2 = os.path.join(project_dir, "Ready_data", input_file_root, input_file_root + "_Total_power_plot.png")
 
+reg_sig_file = os.path.join(working_dir, "RegA Signal", "rega_filtered.csv")
 
 #Saves the average of each column as a new row
 def save_avg(file):
@@ -89,22 +92,88 @@ def plot_data(baseline_file, controlled_file, title, photo_file, ax):
     df_base['Time'] = pd.to_datetime(df_base['Time'], errors='coerce').dt.strftime('%H:%M')
     df_con['Time'] = pd.to_datetime(df_con['Time'], errors='coerce').dt.strftime('%H:%M')
 
+    df_reg_sig = pd.read_csv(
+            reg_sig_file,
+            parse_dates=["Timestamp"]
+        )
+    
+    df_reg_sig.rename(
+        columns={
+            "Timestamp":"Time",
+            "Signal":"signal"
+        },
+        inplace=True
+    )
+    # AC_B2 simulates a warm-up day and then retains one day of results.
+    # The exported signal contains both simulation days, so keep the first
+    # 24-hour signal segment instead of plotting the same clock times twice.
+    signal_date = df_reg_sig['Time'].dt.normalize().iloc[0]
+    df_reg_sig = df_reg_sig[
+        df_reg_sig['Time'].dt.normalize() == signal_date
+    ].copy()
+    
+    # convert time column to a usable datetime fomat
+    for df in [df_base, df_con, df_reg_sig]:
+        df['Time'] = pd.to_datetime(df['Time'])
+        df['Time'] = pd.to_datetime(df['Time'].dt.strftime("1900-01-01 %H:%M:%S"))
+    # df_reg_sig['Time'] = df_reg_sig['Time'].time()
+    # print(df_base["Time"].min())
+    # print(df_base["Time"].max())
+    
+    # print(df_reg_sig["Time"].min())
+    # print(df_reg_sig["Time"].max())
+    
+    # print("Baseline:", len(df_base))
+    # print("Controlled:", len(df_con))
+    # print("RegA:", len(df_reg_sig))
+    
     #plot
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot (df_base['Time'], df_base['baseline'], label='baseline', color='blue', linestyle='-')
-    ax.plot (df_con['Time'], df_con['controlled'], label='controlled', color='orange', linestyle='--')
-
+    
+    ax.plot(df_base['Time'],
+            df_base['baseline'],
+            label='baseline',
+            color='blue')
+    
+    ax.plot(df_con['Time'],
+            df_con['controlled'],
+            label='controlled',
+            color='orange',
+            linestyle='--')
+    
+    ax2 = ax.twinx()
+    
+    ax2.plot(df_reg_sig['Time'],
+            df_reg_sig['signal'],
+            label='regulation signal',
+            color='mediumorchid',
+            linestyle=':')
     # Customize and display
     ax.set_title(title)
     ax.set_xlabel('Time')
     ax.set_ylabel('Power (kW)')
-    ax.legend() # Displays labels properly
+    # ax.legend() # Displays labels properly
     # ax.set_xlim(0, 24)
     # ax.set_xticks([0,6,12,18,24])
-
-    ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=6))  # Limit ticks
-
-    plt.savefig(photo_file, dpi=300, bbox_inches='tight')  # Save the figure
+    ax2.set_ylabel("Normalized Regulation Signal")
+    ax2.set_ylim(-1.1, 1.1)
+    
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    
+    ax.legend(
+        lines1 + lines2,
+        labels1 + labels2,
+        loc="upper right"
+    )
+    
+    
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+    ax.xaxis.set_major_locator(mdates.HourLocator(interval=4))
+    
+    fig.autofmt_xdate()
+    
+    plt.savefig(photo_file, dpi=300, bbox_inches='tight')
 
 save_avg(output_file_1)
 save_avg(output_file_2)

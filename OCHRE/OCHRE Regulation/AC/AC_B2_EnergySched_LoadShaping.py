@@ -52,7 +52,8 @@ t_res = 1  # minutes
 #
 # Set this no higher than the reliably available AC flexibility in the fleet.
 # The controller logs availability so this value can be calibrated after a run.
-REGULATION_CAPACITY_KW = 25.0
+UP_REGULATION_CAPACITY_KW = 400.0
+DOWN_REGULATION_CAPACITY_KW = 600.0
 
 # Dispatch and comfort settings.  With a one-minute timestep, five minutes is
 # a conservative initial minimum command duration.  A home is always released
@@ -238,7 +239,11 @@ def dispatch_regulation_signal(fleet_data, reg_sig):
         reg_sig = 0.0
     reg_sig = max(-1.0, min(1.0, reg_sig))
 
-    target_delta_kw = reg_sig * REGULATION_CAPACITY_KW
+    if reg_sig > 0:
+        target_delta_kw = reg_sig * UP_REGULATION_CAPACITY_KW
+    else:
+        target_delta_kw = reg_sig * DOWN_REGULATION_CAPACITY_KW
+
     requested_mode = "LOAD" if target_delta_kw > 0 else "SHED"
 
     # A neutral or reversed request releases old commands immediately.  For a
@@ -538,7 +543,8 @@ if __name__ == "__main__":
         vpp_state_log.append({
             "Time": sim_time,
             "Regulation Signal": reg_sig,
-            "Regulation Capacity (kW)": REGULATION_CAPACITY_KW,
+            "Up Regulation Capacity (kW)": UP_REGULATION_CAPACITY_KW,
+            "Down Regulation Capacity (kW)": DOWN_REGULATION_CAPACITY_KW,
             "Target Delta (kW)": target_delta_kw,
             "Actual Delta (kW)": actual_delta_kw,
             "Tracking Error (kW)": tracking_error_kw,
