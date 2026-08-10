@@ -45,7 +45,7 @@ XML_ADDRESS = "home.xml"
 CSV_ADDRESS = "in.schedules.csv"
 
 REG_DIR = os.path.join(WORKING_DIR, "RegA Signal")
-REG_ADDRESS = "RegA_Generated.csv"
+REG_ADDRESS = "RegA-ochre.csv"
 
 
 # Simulation parameters
@@ -90,7 +90,7 @@ count = 0
 
 def signal_aggregator_mean(reg_signal = pd.read_csv(os.path.join(REG_DIR, REG_ADDRESS))):
     # assume sig_step in seconds and t_res in minutes
-    reg_signal["timestamp"] = pd.to_datetime(reg_signal["Timestamp"])
+    reg_signal["timestamp"] = pd.to_datetime(reg_signal["Time"])
 
     sig_step_dt = reg_signal["timestamp"].diff()
     sig_step = int(

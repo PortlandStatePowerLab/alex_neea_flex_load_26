@@ -37,7 +37,7 @@ XML_ADDRESS = "home.xml"
 CSV_ADDRESS = "in.schedules.csv"
 
 REG_DIR = os.path.join(WORKING_DIR, "RegA Signal")
-REG_ADDRESS = "RegA_Generated.csv"
+REG_ADDRESS = "RegA-ochre.csv"
 
 # Simulation parameters
 Start = dt.datetime(2018, 7, 11, 0, 0)
@@ -52,8 +52,8 @@ t_res = 1  # minutes
 #
 # Set this no higher than the reliably available AC flexibility in the fleet.
 # The controller logs availability so this value can be calibrated after a run.
-UP_REGULATION_CAPACITY_KW = 400.0
-DOWN_REGULATION_CAPACITY_KW = 600.0
+UP_REGULATION_CAPACITY_KW = 550.0
+DOWN_REGULATION_CAPACITY_KW = 550.0
 
 # Dispatch and comfort settings.  With a one-minute timestep, five minutes is
 # a conservative initial minimum command duration.  A home is always released
@@ -75,7 +75,7 @@ count = 0
 
 def signal_aggregator_mean(reg_signal = pd.read_csv(os.path.join(REG_DIR, REG_ADDRESS))):
     # assume sig_step in seconds and t_res in minutes
-    reg_signal["timestamp"] = pd.to_datetime(reg_signal["Timestamp"])
+    reg_signal["timestamp"] = pd.to_datetime(reg_signal["Time"])
 
     sig_step_dt = reg_signal["timestamp"].diff()
     sig_step = int(

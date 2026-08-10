@@ -12,8 +12,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 
-# Must match ``filename`` in AC_B2_EnergySched_LoadShaping.
-INPUT_FILE_ROOT = "AC_Test_PID_1.0_0.8_1.0"
+INPUT_FILE_ROOT = "2025_All_630_1_45_1700_1_45_OS"
 MIN_BASELINE_KW = 0.01
 PLOT_POINTS = 1000
 
