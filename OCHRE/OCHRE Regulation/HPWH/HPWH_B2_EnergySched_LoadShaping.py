@@ -1,7 +1,7 @@
 """
 Author: Thomas Metzler
 Created: 7/6/26
-Dispatches AC load and shed commands to track a normalized regulation signal.
+Dispatches HPWH load and shed commands to track a normalized regulation signal.
 """
 
 import os
@@ -60,7 +60,7 @@ t_res = 1  # minutes
 #   -1.0 -> reduce fleet load by REGULATION_CAPACITY_KW
 #    0.0 -> return to the normal thermostat
 #
-# Set this no higher than the reliably available AC flexibility in the fleet.
+# Set this no higher than the reliably available HPWH flexibility in the fleet.
 # The controller logs availability so this value can be calibrated after a run.
 REGULATION_CAPACITY_KW = 200.0
 
@@ -216,8 +216,8 @@ def _clean_power(value, default=0.0):
 def _estimated_response_kw(home, mode):
     """Estimate the incremental response from dispatching one home.
 
-    For a shed, the currently operating AC power is the best available
-    estimate.  For load, use the home's most recent AC power when available,
+    For a shed, the currently operating HPWH power is the best available
+    estimate.  For load, use the home's most recent HPWH power when available,
     otherwise use a configurable fleet-average starting estimate.
     """
     hpwh_kw = _clean_power(home.get("last_hpwh_kw"))
@@ -244,8 +244,8 @@ def _load_eligible(home):
 def dispatch_regulation_signal(fleet_data, reg_sig):
     """Dispatch eligible homes toward the requested kW regulation target.
 
-    Negative signals shed ACs that are currently on.  Positive signals
-    pre-cool warm homes.  The selection uses physical state and estimated kW
+    Negative signals shed HPWHs that are currently on.  Positive signals
+    preheat cooler tanks.  The selection uses physical state and estimated kW
     response rather than a fixed percentage of all homes.
     """
     try:
@@ -552,7 +552,10 @@ if __name__ == "__main__":
         for home, result in zip(fleet_data, step_results):
             home["last_base_kw"] = _clean_power(result["base_kw"])
             home["last_ctrl_kw"] = _clean_power(result["ctrl_kw"])
-            home["last_hpwh_kw"] = _clean_power(result["hpwh_kw"])
+            # ``update_home_worker`` reports baseline and controlled HPWH
+            # power separately.  Dispatch eligibility must use the most
+            # recent controlled HPWH power, not a nonexistent generic key.
+            home["last_hpwh_kw"] = _clean_power(result["ctrl_hpwh_kw"])
             home["last_tank_temp_c"] = result["tank_temp_c"]
             home["last_base_hpwh_kw"] = _clean_power(result["base_hpwh_kw"])
             home["last_ctrl_hpwh_kw"] = _clean_power(result["ctrl_hpwh_kw"])
