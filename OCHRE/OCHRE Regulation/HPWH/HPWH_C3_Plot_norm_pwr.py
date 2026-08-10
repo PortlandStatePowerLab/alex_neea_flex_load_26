@@ -1,8 +1,8 @@
 """Plot the HPWH fleet's controlled-minus-baseline power response.
 
-Run HPWH_C1_parse_OCHRE_data_final.py first. This script reads C1's
-water-heating-power CSVs and writes a separate response plot without
-overwriting C2's plots.
+Run HPWH_C1_parse_OCHRE_data_final.py first. C3 uses C1's water-heating
+power CSVs; it also accepts the same files after C2 has appended its average
+row. The resulting plot is saved beside the C1/C2 outputs.
 """
 
 import os
@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 
+# Must match ``filename`` in HPWH_B2_EnergySched_LoadShaping.py.
 INPUT_FILE_ROOT = "2025_All_630_1_45_1700_1_45_OS"
 PLOT_POINTS = 1000
 
@@ -33,42 +34,85 @@ plot_file = os.path.join(
 
 
 def average_power_by_time(csv_file, column_name):
-    """Return the per-home average power with a usable time column."""
+    """Return mean HPWH power by clock time from a C1/C2 output CSV."""
     data = pd.read_csv(csv_file, index_col=0)
-    average = data.mean(axis=0, numeric_only=True)
+    numeric_data = data.apply(pd.to_numeric, errors="coerce")
+
+    # C2 appends its per-column average as a final row with an empty Home
+    # value. Reuse that row when present so C3 exactly matches C2's average.
+    if data.index.isna().any():
+        average = numeric_data.loc[data.index.isna()].iloc[-1]
+    else:
+        average = numeric_data.mean(axis=0)
+
     result = average.rename(column_name).rename_axis("Time").reset_index()
-    result["Time"] = pd.to_datetime(result["Time"])
+    result["Time"] = pd.to_datetime(result["Time"], format="%H:%M", errors="coerce")
+    result = result.dropna(subset=["Time", column_name])
+    if result.empty:
+        raise ValueError(
+            f"No usable HH:MM power columns were found in: {csv_file}"
+        )
     return result
 
 
 def load_regulation_signal():
-    """Load the one-day signal segment corresponding to C2's plot."""
+    """Load the first one-day signal segment, matching C2's plot."""
     signal = pd.read_csv(reg_sig_file, parse_dates=["Timestamp"])
+    required_columns = {"Timestamp", "Signal"}
+    if not required_columns.issubset(signal.columns):
+        raise ValueError(
+            f"{reg_sig_file} must contain Timestamp and Signal columns."
+        )
+
     signal = signal.rename(columns={"Timestamp": "Time", "Signal": "signal"})
+    signal = signal.dropna(subset=["Time", "signal"])
+    if signal.empty:
+        raise ValueError(f"No usable regulation-signal rows were found in: {reg_sig_file}")
+
     signal_date = signal["Time"].dt.normalize().iloc[0]
-    signal = signal[signal["Time"].dt.normalize() == signal_date].copy()
-    return signal[["Time", "signal"]]
+    return signal[signal["Time"].dt.normalize() == signal_date][["Time", "signal"]].copy()
+
+
+def calculate_correlation(power, signal):
+    """Print and return the response-to-signal correlation for plotted points."""
+    merged = power.merge(signal, on="Time", how="inner")
+    if len(merged) < 2:
+        print("Correlation unavailable: fewer than two aligned power/signal points.")
+        return float("nan")
+
+    correlation = merged["controlled_minus_baseline"].corr(merged["signal"])
+    print(
+        "Correlation between controlled-baseline power and regulation signal: "
+        f"{correlation:.4f}"
+    )
+    return correlation
 
 
 def main():
-    for required_file in (baseline_file, controlled_file, reg_sig_file):
-        if not os.path.isfile(required_file):
-            raise FileNotFoundError(
-                f"Required input was not found: {required_file}\n"
-                "Run HPWH_C1 with the same INPUT_FILE_ROOT before C3."
-            )
+    missing_files = [
+        file for file in (baseline_file, controlled_file, reg_sig_file)
+        if not os.path.isfile(file)
+    ]
+    if missing_files:
+        raise FileNotFoundError(
+            "C3 cannot plot because these required files are missing:\n- "
+            + "\n- ".join(missing_files)
+            + "\nRun HPWH_C1 with the same INPUT_FILE_ROOT, then run C3."
+        )
 
     baseline = average_power_by_time(baseline_file, "baseline_kw")
     controlled = average_power_by_time(controlled_file, "controlled_kw")
-    global power
     power = baseline.merge(controlled, on="Time", how="inner")
+    if power.empty:
+        raise ValueError("Baseline and controlled HPWH files have no matching clock times.")
+    power["controlled_minus_baseline"] = (
+        power["controlled_kw"] - power["baseline_kw"]
+    )
 
-    power["controlled_minus_baseline"] = power["controlled_kw"] - power["baseline_kw"]
-
-    global signal
     signal = load_regulation_signal()
 
-    # C2 compares only clock time, so do the same for an aligned overlay.
+    # C1 uses clock-time columns, while the signal has complete timestamps.
+    # Put both on an arbitrary common day before plotting and correlating.
     for frame in (power, signal):
         frame["Time"] = pd.to_datetime(
             frame["Time"].dt.strftime("1900-01-01 %H:%M:%S")
@@ -78,10 +122,10 @@ def main():
     ax.plot(
         power["Time"].tail(PLOT_POINTS),
         power["controlled_minus_baseline"].tail(PLOT_POINTS),
-        label="controlled - baseline power",
+        label="controlled - baseline HPWH power",
         color="green",
     )
-    # ax.axhline(1.0, color="black", linewidth=1, alpha=0.6, label="baseline ratio")
+    ax.axhline(0.0, color="black", linewidth=1, alpha=0.6)
     ax.set_title("Average Water-Heating Power Response per Household")
     ax.set_xlabel("Time")
     ax.set_ylabel("Controlled - Baseline Power (kW)")
@@ -105,16 +149,9 @@ def main():
     fig.autofmt_xdate()
     fig.savefig(plot_file, dpi=300, bbox_inches="tight")
 
-    calculate_correlation()
+    calculate_correlation(power, signal)
     plt.show()
 
 
-def calculate_correlation():
-    merged = power.merge(signal, on="Time", how="inner")
-    correlation = merged["controlled_minus_baseline"].tail(len(merged) // 2).corr(merged["signal"].tail(len(merged) // 2))
-    print(f"Correlation between controlled-baseline power and regulation signal: {correlation:.4f}")
-    return correlation
-
 if __name__ == "__main__":
     main()
-    # calculate_correlation()
