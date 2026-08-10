@@ -3,8 +3,8 @@ import pandas as pd
 import subprocess
 
 import Regulation.HPWH.HPWH_Reg_A3_adjustXML as adj_xml
-import Regulation.HPWH.HPWH_Reg_B1_EnergySched_OffsetSched as run_ochre
-import Regulation.HPWH.HPWH_Reg_C3_get_power_vals as get_pwr
+# import Regulation.HPWH.HPWH_Reg_B1_EnergySched_OffsetSched as run_ochre
+import Regulation.HPWH.HPWH_Reg_C3_get_power_vals as get_reg
 
 input_map = {
     "Heat Pump Water Heater": [
@@ -77,10 +77,9 @@ if FL_type == "Heat Pump Water Heater":
     subprocess.run(['python', "HPWH_Reg_B2_EnergySched_LoadShaping.py"], check=True)
     subprocess.run(['python', "HPWH_Reg_C1_parse_OCHRE_data_final.py"], check=True)
     subprocess.run(['python', "HPWH_Reg_C2_Plot_Totpower_WHpower.py"], check=True)
-     = get_pwr.main()
+    reg_corr = get_reg.main()
 
 
-inputs.Range("L15").Value = max_pwr
-inputs.Range("M15").Value = shift_pwr
+inputs.Range("L15").Value = reg_corr
 
 excel.Calculate()

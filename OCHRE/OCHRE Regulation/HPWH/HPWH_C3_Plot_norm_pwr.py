@@ -1,8 +1,8 @@
-"""Plot controlled power normalized by baseline power.
+"""Plot the HPWH fleet's controlled-minus-baseline power response.
 
-Run AC_C1_parse_OCHRE_data_final.py and AC_C2_Plot_Totpower_WHpower.py
-first.  This script reads the same AC-power CSVs as C2, then writes a
-separate normalized-power plot without overwriting C2's plots.
+Run HPWH_C1_parse_OCHRE_data_final.py first. This script reads C1's
+water-heating-power CSVs and writes a separate response plot without
+overwriting C2's plots.
 """
 
 import os
@@ -13,19 +13,18 @@ import pandas as pd
 
 
 INPUT_FILE_ROOT = "2025_All_630_1_45_1700_1_45_OS"
-MIN_BASELINE_KW = 0.01
 PLOT_POINTS = 1000
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-fl_dir = os.path.dirname(script_dir)
-working_dir = os.path.dirname(fl_dir)
-ready_data_dir = os.path.join(working_dir, "Ready_data", INPUT_FILE_ROOT)
+project_dir = os.path.dirname(script_dir)
+working_dir = os.path.dirname(project_dir)
+ready_data_dir = os.path.join(project_dir, "Ready_data", INPUT_FILE_ROOT)
 
 baseline_file = os.path.join(
-    ready_data_dir, f"{INPUT_FILE_ROOT}_baseline_AC_power.csv"
+    ready_data_dir, f"{INPUT_FILE_ROOT}_baseline_WH_power.csv"
 )
 controlled_file = os.path.join(
-    ready_data_dir, f"{INPUT_FILE_ROOT}_controlled_AC_power.csv"
+    ready_data_dir, f"{INPUT_FILE_ROOT}_controlled_WH_power.csv"
 )
 reg_sig_file = os.path.join(working_dir, "RegA Signal", "rega_filtered.csv")
 plot_file = os.path.join(
@@ -46,7 +45,7 @@ def load_regulation_signal():
     """Load the one-day signal segment corresponding to C2's plot."""
     signal = pd.read_csv(reg_sig_file, parse_dates=["Timestamp"])
     signal = signal.rename(columns={"Timestamp": "Time", "Signal": "signal"})
-    signal_date = signal["Time"].dt.normalize().iloc[-1]
+    signal_date = signal["Time"].dt.normalize().iloc[0]
     signal = signal[signal["Time"].dt.normalize() == signal_date].copy()
     return signal[["Time", "signal"]]
 
@@ -56,7 +55,7 @@ def main():
         if not os.path.isfile(required_file):
             raise FileNotFoundError(
                 f"Required input was not found: {required_file}\n"
-                "Run C1 and C2 with the same INPUT_FILE_ROOT before C3."
+                "Run HPWH_C1 with the same INPUT_FILE_ROOT before C3."
             )
 
     baseline = average_power_by_time(baseline_file, "baseline_kw")
@@ -64,9 +63,6 @@ def main():
     global power
     power = baseline.merge(controlled, on="Time", how="inner")
 
-    # A ratio is undefined when the baseline fleet is off.  Keep those
-    # points as NaN so Matplotlib leaves a gap rather than plotting a spike.
-    
     power["controlled_minus_baseline"] = power["controlled_kw"] - power["baseline_kw"]
 
     global signal
@@ -86,9 +82,9 @@ def main():
         color="green",
     )
     # ax.axhline(1.0, color="black", linewidth=1, alpha=0.6, label="baseline ratio")
-    ax.set_title("Normalized Average Cooling Power per Household")
+    ax.set_title("Average Water-Heating Power Response per Household")
     ax.set_xlabel("Time")
-    ax.set_ylabel("Controlled - Baseline Power")
+    ax.set_ylabel("Controlled - Baseline Power (kW)")
 
     ax2 = ax.twinx()
     ax2.plot(
