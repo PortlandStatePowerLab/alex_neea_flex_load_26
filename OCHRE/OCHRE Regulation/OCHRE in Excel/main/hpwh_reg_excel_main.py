@@ -10,9 +10,9 @@ hpwh_dir = base_dir.parent / "HPWH"
 if str(hpwh_dir) not in sys.path:
     sys.path.insert(0, str(hpwh_dir))
 
-import HPWH_A3_adjustXML as adj_xml
-import HPWH_B2_EnergySched_LoadShaping as run_ochre
-import HPWH_C3_Plot_norm_pwr as get_reg
+from ..HPWH import HPWH_A3_adjustXML as adj_xml
+from ..HPWH import HPWH_B2_EnergySched_LoadShaping as run_ochre
+from ..HPWH import HPWH_C3_Plot_norm_pwr as get_reg
 
 
 
