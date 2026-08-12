@@ -44,7 +44,7 @@ def load_and_expand_signal(path) -> pd.DataFrame:
     offsets = parsed - parsed.iloc[0].normalize()
 
     # Stretch time by 10x.
-    expanded_offsets = offsets * 10
+    expanded_offsets = offsets * 5
 
     signal = pd.DataFrame(
         {

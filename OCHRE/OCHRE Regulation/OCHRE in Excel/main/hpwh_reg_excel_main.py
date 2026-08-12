@@ -92,8 +92,8 @@ if FL_type == "Heat Pump Water Heater":
     adj_xml.main(params)
     # subprocess.run(['python', "HPWH_Reg_A4_make_reg_signal.py"], check=True)
     run_ochre.main(params)
-    subprocess.run([sys.executable, str(hpwh_dir / "HPWH_C1_parse_OCHRE_data_final.py")], check=True)
-    subprocess.run([sys.executable, str(hpwh_dir / "HPWH_C2_Plot_Totpower_WHpower.py")], check=True)
+    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C1_parse_OCHRE_data_final.py")], check=True)
+    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C2_Plot_Totpower_WHpower.py")], check=True)
     reg_corr = get_reg.main()
 
 
