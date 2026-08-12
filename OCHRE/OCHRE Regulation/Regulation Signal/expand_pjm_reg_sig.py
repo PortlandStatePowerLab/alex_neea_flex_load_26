@@ -20,60 +20,84 @@ START_TIME = pd.Timestamp("2018-01-01 00:00:00")
 TARGET_MINUTES = 2 * 24 * 60
 
 
-def load_and_downsample_signal(path) -> pd.DataFrame:
+def load_and_expand_signal(path) -> pd.DataFrame:
     raw = pd.read_csv(path)
 
     signal_columns = [
         col for col in raw.columns
         if col.strip().startswith("Normalized RegA Signal Test Wave")
     ]
-    if "Time" not in raw.columns or len(signal_columns) != 1:
-        raise ValueError(f"Expected Time and one RegA signal column; found {list(raw.columns)}")
 
-    # Input times such as 0:02 mean 0 minutes, 2 seconds.
-    parsed = pd.to_datetime(raw["Time"].astype(str), format="%M:%S", errors="raise")
+    if "Time" not in raw.columns or len(signal_columns) != 1:
+        raise ValueError(
+            f"Expected Time and one RegA signal column; "
+            f"found {list(raw.columns)}"
+        )
+
+    # Convert timestamps to elapsed time.
+    parsed = pd.to_datetime(
+        raw["Time"].astype(str),
+        format="%M:%S",
+        errors="raise"
+    )
+
     offsets = parsed - parsed.iloc[0].normalize()
+
+    # Stretch time by 10x.
+    expanded_offsets = offsets * 10
 
     signal = pd.DataFrame(
         {
-            "Time": START_TIME + offsets,
-            "Signal": pd.to_numeric(raw[signal_columns[0]], errors="raise"),
-        }
-    ).set_index("Time")
-
-    # A value exactly at 40:00 is the endpoint, not a new full minute.
-    if signal.index[-1] == signal.index[0] + pd.Timedelta(minutes=40):
-        signal = signal.iloc[:-1]
-
-    one_minute = signal.resample("1min").mean()
-
-    if one_minute["Signal"].isna().any():
-        raise ValueError("Missing samples prevent creation of a complete one-minute signal.")
-
-    return one_minute.reset_index()
-
-
-def cycle_to_two_days(one_minute: pd.DataFrame) -> pd.DataFrame:
-    cycles_needed = math.ceil(TARGET_MINUTES / len(one_minute))
-    values = pd.concat(
-        [one_minute["Signal"]] * cycles_needed,
-        ignore_index=True,
-    ).iloc[:TARGET_MINUTES]
-
-    return pd.DataFrame(
-        {
-            "Time": pd.date_range(
-                start=START_TIME,
-                periods=TARGET_MINUTES,
-                freq="min",
+            "Time": START_TIME + expanded_offsets,
+            "Signal": pd.to_numeric(
+                raw[signal_columns[0]],
+                errors="raise"
             ),
-            "Signal": values,
         }
     )
 
+    return signal
 
-signal_1min = load_and_downsample_signal(os.path.join(REG_DIR, REG_ADDRESS))
-ochre_signal = cycle_to_two_days(signal_1min)
+
+def cycle_to_two_days(signal: pd.DataFrame) -> pd.DataFrame:
+    # Determine the original timestep after expansion.
+    timestep = signal["Time"].iloc[1] - signal["Time"].iloc[0]
+
+    # How many samples are needed for two days?
+    target_duration = pd.Timedelta(days=2)
+    samples_needed = math.ceil(
+        target_duration / timestep
+    )
+
+    # Repeat the signal enough times.
+    cycles_needed = math.ceil(
+        samples_needed / len(signal)
+    )
+
+    values = pd.concat(
+        [signal["Signal"]] * cycles_needed,
+        ignore_index=True
+    ).iloc[:samples_needed]
+
+    # Create timestamps at the expanded timestep.
+    times = pd.date_range(
+        start=START_TIME,
+        periods=len(values),
+        freq=timestep
+    )
+
+    return pd.DataFrame(
+        {
+            "Time": times,
+            "Signal": values
+        }
+    )
+
+signal_expanded = load_and_expand_signal(
+    os.path.join(REG_DIR, REG_ADDRESS)
+)
+
+ochre_signal = cycle_to_two_days(signal_expanded)
 
 ochre_signal.to_csv(
     os.path.join(REG_DIR, OUTPUT_ADDRESS),

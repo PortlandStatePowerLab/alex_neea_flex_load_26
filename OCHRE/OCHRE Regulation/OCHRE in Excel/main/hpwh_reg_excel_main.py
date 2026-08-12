@@ -6,13 +6,13 @@ import sys
 from pathlib import Path
 
 base_dir = Path(__file__).resolve().parent
-hpwh_dir = base_dir.parent / "HPWH"
-if str(hpwh_dir) not in sys.path:
-    sys.path.insert(0, str(hpwh_dir))
+project_dir = base_dir.parent
+if str(project_dir) not in sys.path:
+    sys.path.insert(0, str(project_dir))
 
-from ..HPWH import HPWH_A3_adjustXML as adj_xml
-from ..HPWH import HPWH_B2_EnergySched_LoadShaping as run_ochre
-from ..HPWH import HPWH_C3_Plot_norm_pwr as get_reg
+from HPWH import HPWH_A3_adjustXML as adj_xml
+from HPWH import HPWH_B2_EnergySched_LoadShaping as run_ochre
+from HPWH import HPWH_C3_Plot_norm_pwr as get_reg
 
 
 
@@ -70,7 +70,7 @@ start_time = inputs.Range("N36").Value
 end_time = inputs.Range("N37").Value
 month_load_amt = inputs.Range("M33").Value
 
-t_res = inputs.Range("PLACEHOLDER").Value
+t_res = inputs.Range("N39").Value
 
 pop_num = inputs.Range("K35").Value
 adopt_rate = inputs.Range("K37").Value
