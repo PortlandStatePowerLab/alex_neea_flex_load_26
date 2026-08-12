@@ -18,8 +18,8 @@ PLOT_POINTS = 1000
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_dir = os.path.dirname(script_dir)
-working_dir = os.path.dirname(project_dir)
-ready_data_dir = os.path.join(project_dir, "Ready_data", INPUT_FILE_ROOT)
+# working_dir = os.path.dirname(project_dir)
+ready_data_dir = os.path.join(script_dir, "Ready_data", INPUT_FILE_ROOT)
 
 baseline_file = os.path.join(
     ready_data_dir, f"{INPUT_FILE_ROOT}_baseline_WH_power.csv"
@@ -27,7 +27,7 @@ baseline_file = os.path.join(
 controlled_file = os.path.join(
     ready_data_dir, f"{INPUT_FILE_ROOT}_controlled_WH_power.csv"
 )
-reg_sig_file = os.path.join(working_dir, "RegA Signal", "rega_filtered.csv")
+reg_sig_file = os.path.join(project_dir, "Reg Sig", "RegA-ochre.csv")
 plot_file = os.path.join(
     ready_data_dir, f"{INPUT_FILE_ROOT}_normalized_power_plot.png"
 )
@@ -81,10 +81,10 @@ def calculate_correlation(power, signal):
         return float("nan")
 
     correlation = merged["controlled_minus_baseline"].corr(merged["signal"])
-    print(
-        "Correlation between controlled-baseline power and regulation signal: "
-        f"{correlation:.4f}"
-    )
+    # print(
+    #     "Correlation between controlled-baseline power and regulation signal: "
+    #     f"{correlation:.4f}"
+    # )
     return correlation
 
 

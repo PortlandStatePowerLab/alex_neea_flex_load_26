@@ -222,7 +222,10 @@ __marimo__/
 AC Filtered/
 AC Input Files/
 Ready Data/
+*.csv
 OCHRE/OCHRE Regulation/AC/Results/
+OCHRE/OCHRE Regulation/OCHRE in Excel/HPWH/HPWH All Input Files/
+OCHRE/OCHRE Regulation/OCHRE in Excel/HPWH/HPWH All Portland Input Files/
 OCHRE/Ready_data/
 AC All Portland Input Files/
 
