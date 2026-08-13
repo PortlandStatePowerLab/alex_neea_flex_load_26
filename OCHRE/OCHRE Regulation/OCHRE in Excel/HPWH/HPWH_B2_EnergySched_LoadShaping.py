@@ -58,7 +58,7 @@ REG_ADDRESS = "RegA-ochre.csv"
 # Simulation parameters
 Start = dt.datetime(2018, 1, 11, 0, 0)
 Duration = 2  # days
-t_res = 1  # minutes
+t_res = 30.0  # minutes
 
 
 # The regulation signal is normalized to [-1, 1].  It is converted to a kW

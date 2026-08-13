@@ -4,6 +4,7 @@ import subprocess
 import os
 import sys
 from pathlib import Path
+import re
 
 base_dir = Path(__file__).resolve().parent
 project_dir = base_dir.parent
@@ -27,6 +28,24 @@ from HPWH import HPWH_C3_Plot_norm_pwr as get_reg
 # run C2
 # run C3
 # send correlation from c3 to excel
+
+def set_t_res(value, file):
+    """Modify t_res in HPWH_B2_EnergySched_LoadShaping.py"""
+
+    text = file.read_text()
+
+    text = re.sub(
+        r"(t_res\s*=\s*)[-0-9.]+",
+        rf"\g<1>{value}",
+        text,
+    )
+
+    try:
+        file.write_text(text)
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not modify {file}: {e}"
+        ) from e
 
 input_map = {
     "Heat Pump Water Heater": [
@@ -71,6 +90,8 @@ end_time = inputs.Range("N37").Value
 month_load_amt = inputs.Range("M33").Value
 
 t_res = inputs.Range("N39").Value
+
+set_t_res(t_res, project_dir / "HPWH" / "HPWH_B2_EnergySched_LoadShaping.py")
 
 pop_num = inputs.Range("K35").Value
 adopt_rate = inputs.Range("K37").Value
