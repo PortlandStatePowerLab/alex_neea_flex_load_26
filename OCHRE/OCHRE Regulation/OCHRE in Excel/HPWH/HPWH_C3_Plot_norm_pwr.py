@@ -81,10 +81,10 @@ def calculate_correlation(power, signal):
         return float("nan")
 
     correlation = merged["controlled_minus_baseline"].corr(merged["signal"])
-    # print(
-    #     "Correlation between controlled-baseline power and regulation signal: "
-    #     f"{correlation:.4f}"
-    # )
+    print(
+        "Correlation between controlled-baseline power and regulation signal: "
+        f"{correlation:.4f}"
+    )
     return correlation
 
 

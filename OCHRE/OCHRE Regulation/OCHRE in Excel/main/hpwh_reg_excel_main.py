@@ -147,15 +147,26 @@ params = {
     for i, var in enumerate(input_map[FL_type], start=9)
 }
 
-if FL_type == "Heat Pump Water Heater":
+# if FL_type == "Heat Pump Water Heater":
     # subprocess.run(['python', "HPWH_Reg_A1_recreate_oregon_filters.py"], check=True)
     # subprocess.run(['python', "HPWH_Reg_A2_downloadTestSet.py"], check=True)
-    adj_xml.main(params)
-    # subprocess.run(['python', "HPWH_Reg_A4_make_reg_signal.py"], check=True)
-    run_ochre.main(params)
-    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C1_parse_OCHRE_data_final.py")], check=True)
-    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C2_Plot_Totpower_WHpower.py")], check=True)
-    reg_corr = get_reg.main()
+adj_xml.main(params)
+# subprocess.run(['python', "HPWH_Reg_A4_make_reg_signal.py"], check=True)
+run_ochre.main(params)
+subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C1_parse_OCHRE_data_final.py")], check=True)
+subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C2_Plot_Totpower_WHpower.py")], check=True)
+reg_corr = get_reg.main()
+
+print(f"[STATUS] Final regulation correlation: {reg_corr}")
+
+if reg_corr is None:
+    raise RuntimeError("C3 did not return a correlation value.")
+
+inputs.Range("N29").Value = float(reg_corr)
+
+excel.Calculate()
+
+print("[STATUS] Correlation written to Calculator!N29.")
 
 
 inputs.Range("N29").Value = reg_corr

@@ -168,7 +168,7 @@ Start = dt.datetime(2018, 1, 11, 0, 0)
 Duration = 2  # days
 t_res = 30.0  # minutes
 
-NUM_HOMES = 100
+NUM_HOMES = 10
 
 # The regulation signal is normalized to [-1, 1].  It is converted to a kW
 # request using REGULATION_CAPACITY_KW:
@@ -1129,8 +1129,7 @@ def main(parameters=None):
                 or step_index == total_steps
             ):
                 print(
-                    f"Completed {step_index}/{total_steps} steps "
-                    f"({sim_time:%Y-%m-%d %H:%M})",
+                    f"Completed {step_index}/{total_steps} steps ",
                     flush=True,
                 )
 
