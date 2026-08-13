@@ -137,20 +137,40 @@ def signal_aggregator_mean(reg_signal = pd.read_csv(os.path.join(REG_DIR, REG_AD
 
 def save_sig(reg_sig, start_time):
 
+    ts = int(1 / t_res)        # minutes per average
+
+    avg_sig = []
+
+    for i in range(0, len(reg_sig), ts):
+        avg_sig.append(reg_sig.iloc[i:i+ts].mean())
+
+    avg_sig = pd.Series(avg_sig)
+
+    sim_times = pd.date_range(
+        start=start_time,
+        periods=len(avg_sig),
+        freq="1min"
+    )
+
     saved_sig = pd.DataFrame({
-        "Timestamp": reg_sig.index,
-        "Signal": reg_sig.values
+        "Timestamp": sim_times,
+        "Signal": avg_sig
     })
 
-    os.makedirs(REG_DIR, exist_ok=True)
+    reg_results_dir = os.path.join(
+        WORKING_DIR,
+        "RegA Signal"
+    )
+
+    os.makedirs(reg_results_dir, exist_ok=True)
 
     saved_sig.to_csv(
-        os.path.join(REG_DIR, "rega_filtered.csv"),
+        os.path.join(reg_results_dir, "rega_filtered.csv"),
         index=False
     )
 
-    print("Filtered regulation signal saved.")
-    
+    print("file saved!")
+
 
 REG_SIGNAL = signal_aggregator_mean()  # Pre-compute the regulation signal for the entire simulation
 

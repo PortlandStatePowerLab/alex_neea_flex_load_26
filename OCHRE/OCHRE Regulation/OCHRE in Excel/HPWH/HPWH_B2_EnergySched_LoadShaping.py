@@ -14,6 +14,60 @@ import concurrent.futures
 from pathlib import Path
 import ochre
 from math import isfinite
+import time
+
+
+import sys
+import threading
+
+
+class WarningFilter:
+    """Suppress warning messages while allowing normal output and errors."""
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.lock = threading.Lock()
+        self.local = threading.local()
+
+    def write(self, text):
+        if not text:
+            return 0
+
+        if not hasattr(self.local, "buffer"):
+            self.local.buffer = ""
+
+        self.local.buffer += text
+
+        # Process complete lines.
+        while "\n" in self.local.buffer:
+            line, self.local.buffer = self.local.buffer.split("\n", 1)
+
+            # Suppress anything explicitly identified as a warning.
+            if "WARNING" in line.upper():
+                continue
+
+            with self.lock:
+                self.stream.write(line + "\n")
+                self.stream.flush()
+
+        return len(text)
+
+    def flush(self):
+        if hasattr(self.local, "buffer"):
+            if self.local.buffer:
+                with self.lock:
+                    self.stream.write(self.local.buffer)
+                    self.stream.flush()
+
+                self.local.buffer = ""
+
+        self.stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+    
+sys.stdout = WarningFilter(sys.stdout)
+sys.stderr = WarningFilter(sys.stderr)
 
 #########################################
 # USER SETTINGS
@@ -27,8 +81,8 @@ Input_folder = "HPWH All Portland Input Files"
 # Original OCHRE defaults folder
 ochre_dir = Path(ochre.__file__).resolve().parent
 DEFAULT_INPUT = ochre_dir / "defaults" / "Input Files"
-print("OCHRE installed at:", ochre_dir)
-print(DEFAULT_INPUT)
+# print("OCHRE installed at:", ochre_dir)
+# print(DEFAULT_INPUT)
 
 DEFAULT_WEATHER = ochre_dir / "defaults" / "Weather" / "USA_OR_Portland.Intl.AP.726980_TMY3.epw"
 #DEFAULT_WEATHER = ochre_dir / "defaults" / "Weather" / "G4100510_2018.csv" 
@@ -224,24 +278,9 @@ def signal_aggregator_mean(reg_signal=None):
 
 def save_sig(reg_sig, start_time):
 
-    ts = int(1 / t_res)        # minutes per average
-
-    avg_sig = []
-
-    for i in range(0, len(reg_sig), ts):
-        avg_sig.append(reg_sig.iloc[i:i+ts].mean())
-
-    avg_sig = pd.Series(avg_sig)
-
-    sim_times = pd.date_range(
-        start=start_time,
-        periods=len(avg_sig),
-        freq="1min"
-    )
-
     saved_sig = pd.DataFrame({
-        "Timestamp": sim_times,
-        "Signal": avg_sig
+        "Timestamp": reg_sig.index,
+        "Signal": reg_sig.values
     })
 
     os.makedirs(REG_DIR, exist_ok=True)
@@ -251,7 +290,7 @@ def save_sig(reg_sig, start_time):
         index=False
     )
 
-    print("file saved!")
+    # print("Filtered regulation signal saved.")
 
 
 REG_SIGNAL = signal_aggregator_mean()
@@ -391,8 +430,8 @@ def filter_schedules(home_path):
     filtered_columns = [col for col in df_sched.columns if col in valid_schedule_names]
     dropped_columns = [col for col in df_sched.columns if col not in filtered_columns]
     
-    if dropped_columns:
-        print(f"Dropped invalid schedules for {home_path}: {dropped_columns}")
+    # if dropped_columns:
+        # print(f"Dropped invalid schedules for {home_path}: {dropped_columns}")
 
     df_sched_filtered = df_sched[filtered_columns]
     df_sched_filtered.to_csv(filtered_sched_file, index=False)
@@ -500,58 +539,77 @@ def initialize_home(home_path, weather_file_path):
     sim_dwelling = Dwelling(name=f"Ctrl_{os.path.basename(home_path)}", **dwelling_args_local)
     return base_dwelling, sim_dwelling
 
-def init_fleet_worker(home):
-    """Worker function to initialize dwellings in parallel"""
-    base_dw, sim_dw = initialize_home(home, WEATHER_FILE)
-    return {
-        "base": base_dw, 
-        "sim": sim_dw, 
-        "path": home,
-        "override": "NORMAL",
-        "lockout_steps": 0,
-        "dispatch_count": 0,
-        "dispatch_kw": 0.0,
-        "last_base_kw": 0.0,
-        "last_ctrl_kw": 0.0,
-        "last_hpwh_kw": 0.0,
-        "last_tank_temp_c": TbaselineC,
-        "last_base_hpwh_kw": 0.0,
-        "last_ctrl_hpwh_kw": 0.0,
-    }
+def init_fleet_worker(home, build_num, num_builds):
+    """Worker function to initialize dwellings in parallel."""
 
+    try:
+        base_dw, sim_dw = initialize_home(home, WEATHER_FILE)
 
-def update_home_worker(home_data):
-    """Advance one baseline/controlled dwelling pair by one timestep.
-
-    Homes do not share model state, so these updates can run concurrently.
-    The fleet override is assigned before this function is called.
-    """
-    base_ctrl = {
-        "Water Heating": {
-            "Setpoint": TbaselineC,
-            "Deadband": TdeadbandC,
-            "Load Fraction": 1,
+        return {
+            "success": True,
+            "base": base_dw,
+            "sim": sim_dw,
+            "path": home,
+            "override": "NORMAL",
+            "lockout_steps": 0,
+            "dispatch_count": 0,
+            "dispatch_kw": 0.0,
+            "last_base_kw": 0.0,
+            "last_ctrl_kw": 0.0,
+            "last_hpwh_kw": 0.0,
+            "last_tank_temp_c": TbaselineC,
+            "last_base_hpwh_kw": 0.0,
+            "last_ctrl_hpwh_kw": 0.0,
         }
-    }
-    base_metrics = home_data["base"].update(control_signal=base_ctrl)
 
-    control_cmd = determine_hpwh_control(global_mode=home_data["override"])
-    ctrl_metrics = home_data["sim"].update(control_signal=control_cmd)
+    except Exception as e:
+        return {
+            "success": False,
+            "path": home,
+            "error": repr(e),
+        }
 
-    def get_metric(metrics, dwelling, name):
-        if isinstance(metrics, dict) and name in metrics:
-            return metrics[name]
-        if hasattr(dwelling, "current_results"):
-            return dwelling.current_results.get(name, 0.0)
-        return 0.0
 
-    return {
-        "base_kw": get_metric(base_metrics, home_data["base"], "Total Electric Power (kW)"),
-        "ctrl_kw": get_metric(ctrl_metrics, home_data["sim"], "Total Electric Power (kW)"),
-        "ctrl_hpwh_kw": get_metric(ctrl_metrics, home_data["sim"], "Water Heating Electric Power (kW)"),
-        "tank_temp_c": get_metric(ctrl_metrics, home_data["sim"], "Water Heating Control Temperature (C)"),
-        "base_hpwh_kw": get_metric(base_metrics, home_data["base"], "Water Heating Electric Power (kW)"),
-    }
+      
+def update_home_worker(home_data):
+    """Advance one baseline/controlled dwelling pair by one timestep."""
+
+    building_name = os.path.basename(home_data["path"])
+
+    try:
+        base_ctrl = {
+            "Water Heating": {
+                "Setpoint": TbaselineC,
+                "Deadband": TdeadbandC,
+                "Load Fraction": 1,
+            }
+        }
+        base_metrics = home_data["base"].update(control_signal=base_ctrl)
+
+        control_cmd = determine_hpwh_control(global_mode=home_data["override"])
+        ctrl_metrics = home_data["sim"].update(control_signal=control_cmd)
+
+        def get_metric(metrics, dwelling, name):
+            if isinstance(metrics, dict) and name in metrics:
+                return metrics[name]
+            if hasattr(dwelling, "current_results"):
+                return dwelling.current_results.get(name, 0.0)
+            return 0.0
+
+        return {
+            "success": True,
+            "base_kw": get_metric(base_metrics, home_data["base"], "Total Electric Power (kW)"),
+            "ctrl_kw": get_metric(ctrl_metrics, home_data["sim"], "Total Electric Power (kW)"),
+            "ctrl_hpwh_kw": get_metric(ctrl_metrics, home_data["sim"], "Water Heating Electric Power (kW)"),
+            "tank_temp_c": get_metric(ctrl_metrics, home_data["sim"], "Water Heating Control Temperature (C)"),
+            "base_hpwh_kw": get_metric(base_metrics, home_data["base"], "Water Heating Electric Power (kW)"),
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "path": home_data["path"],
+            "error": repr(e),
+        }
 
 #########################################
 # MAIN EXECUTION
@@ -559,195 +617,632 @@ def update_home_worker(home_data):
 
 def main(parameters=None):
     """Run the HPWH B2 fleet simulation using calculator parameters."""
+
     global REG_SIGNAL
+
+    # ============================================================
+    # 0. Configuration
+    # ============================================================
+
     configuration = configure(parameters)
     REG_SIGNAL = signal_aggregator_mean()
-    print(f"B2 calculator parameters applied: {configuration['applied']}")
-    if configuration["handled_by_a3"]:
-        print(f"B2 parameters already applied to HPXML by A3: {configuration['handled_by_a3']}")
 
-    # --- Directory Setup ---
+    # ============================================================
+    # 1. Directory Setup
+    # ============================================================
+
     if not os.path.isdir(INPUT_DIR):
         raise FileNotFoundError(
             f"HPWH XML fleet not found: {INPUT_DIR}. Run A3 first to create it."
         )
+
     if not os.path.isfile(WEATHER_FILE):
-        raise FileNotFoundError(f"Weather file not found: {WEATHER_FILE}")
+        raise FileNotFoundError(
+            f"Weather file not found: {WEATHER_FILE}"
+        )
+
     if not os.path.isdir(METADATA_DIR):
-        raise FileNotFoundError(f"Metadata directory not found: {METADATA_DIR}")
+        raise FileNotFoundError(
+            f"Metadata directory not found: {METADATA_DIR}"
+        )
 
     homes = find_all_homes(INPUT_DIR)
-    print(f"Found {len(homes)} homes")
 
-    # --- 1. Parallel Fleet Initialization ---
+    if not homes:
+        raise RuntimeError(
+            f"No valid homes found in {INPUT_DIR}."
+        )
+
+    print(f"Found {len(homes)} homes.", flush=True)
+    print("Initializing homes...", flush=True)
+
+    # This number NEVER changes. It is the denominator used to determine
+    # whether a majority of the original fleet has failed.
+    initial_home_count = len(homes)
+
+    # Keep track of every home that fails at any point.
+    failed_home_paths = set()
+
+    # ============================================================
+    # 2. Parallel Fleet Initialization
+    # ============================================================
+
     fleet_data = []
-    print("Initializing dwellings (in parallel)...")
+    failed_initializations = []
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-        futures = [executor.submit(init_fleet_worker, home) for home in homes]
-        for f in concurrent.futures.as_completed(futures):
-            try:
-                fleet_data.append(f.result())
-            except Exception as e:
-                print("Initialization failed:", e)
+
+        futures = [
+            executor.submit(
+                init_fleet_worker,
+                home,
+                i,
+                initial_home_count
+            )
+            for i, home in enumerate(homes, start=1)
+        ]
+
+        pending = set(futures)
+
+        first_building_initialized = False
+        last_report_time = None
+        last_reported_count = 0
+
+        while pending:
+
+            done, pending = concurrent.futures.wait(
+                pending,
+                timeout=0.5,
+                return_when=concurrent.futures.FIRST_COMPLETED
+            )
+
+            # Process every building that finished since the last check.
+            for future in done:
+
+                result = future.result()
+
+                if result["success"]:
+                    fleet_data.append(result)
+
+                else:
+                    failed_initializations.append(result)
+                    failed_home_paths.add(result["path"])
+
+            initialized_count = len(fleet_data)
+
+            # Start the 5-second timer when the first home finishes.
+            if initialized_count > 0 and not first_building_initialized:
+
+                first_building_initialized = True
+                last_report_time = time.monotonic()
+                last_reported_count = initialized_count
+
+                print(
+                    f"{initialized_count} / "
+                    f"{initial_home_count} homes initialized",
+                    flush=True
+                )
+
+            # Report every 5 seconds.
+            elif (
+                first_building_initialized
+                and time.monotonic() - last_report_time >= 5
+            ):
+
+                if initialized_count != last_reported_count:
+
+                    print(
+                        f"{initialized_count} / "
+                        f"{initial_home_count} homes initialized",
+                        flush=True
+                    )
+
+                    last_reported_count = initialized_count
+
+                last_report_time = time.monotonic()
+
+        # Always report the final count.
+        initialized_count = len(fleet_data)
+
+        if initialized_count != last_reported_count:
+
+            print(
+                f"{initialized_count} / "
+                f"{initial_home_count} homes initialized",
+                flush=True
+            )
+
+    failed_count = len(failed_home_paths)
+
+    # Stop only if more than half of the original homes failed.
+    if failed_count > initial_home_count / 2:
+        raise RuntimeError(
+            f"Majority of homes failed initialization: "
+            f"{failed_count}/{initial_home_count}."
+        )
 
     if not fleet_data:
-        print("No dwellings were initialized. Exiting.")
-        exit()
+        raise RuntimeError(
+            "No homes were successfully initialized."
+        )
 
+    # Number of currently active homes.
     num_homes = len(fleet_data)
-    
-    # --- 2. Co-Simulation Time Loop Setup ---
-    sim_times = fleet_data[0]["base"].sim_times
-    average_power_kw = 0.0
 
-    vpp_state_log = [] # Add this line to initialize the log
+    # ============================================================
+    # 3. Co-Simulation Setup
+    # ============================================================
+
+    sim_times = fleet_data[0]["base"].sim_times
+
+    average_power_kw = 0.0
+    vpp_state_log = []
 
     total_steps = len(sim_times)
-    progress_interval = max(1, int(60 / t_res))  # report once per simulation hour
-    print(f"Starting Co-Simulation Time Loop ({total_steps} steps)...")
+
+    # Report once per simulation hour.
+    progress_interval = max(
+        1,
+        int(60 / t_res)
+    )
+
+    # ============================================================
+    # 4. Co-Simulation Time Loop
+    # ============================================================
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-      for step_index, sim_time in enumerate(sim_times, start=1):
-        raw_reg_sig = get_reg_sig(sim_time)
 
-        # Re-evaluate dispatch only at the calculator's requested control
-        # interval.  OCHRE still advances every timestep using the most recent
-        # command between controller decisions.
-        if (step_index - 1) % CONTROL_INTERVAL_STEPS == 0:
-            (reg_sig, target_delta_kw, estimated_dispatch_kw, dispatched_units,
-             available_kw, retained_kw) = dispatch_regulation_signal(fleet_data, raw_reg_sig)
-        else:
-            try:
-                reg_sig = float(raw_reg_sig)
-            except (TypeError, ValueError):
-                reg_sig = 0.0
-            if pd.isna(reg_sig):
-                reg_sig = 0.0
-            reg_sig = max(-1.0, min(1.0, reg_sig))
-            target_delta_kw = reg_sig * REGULATION_CAPACITY_KW
-            active_mode = "LOAD" if target_delta_kw > 0 else "SHED"
-            active_homes = [
-                home for home in fleet_data if home.get("override") == active_mode
-            ]
-            estimated_dispatch_kw = sum(home.get("dispatch_kw", 0.0) for home in active_homes)
-            dispatched_units = len(active_homes)
-            available_kw = sum(
-                _estimated_response_kw(home, active_mode)
+        for step_index, sim_time in enumerate(sim_times, start=1):
+
+            # ----------------------------------------------------
+            # Get regulation signal
+            # ----------------------------------------------------
+
+            raw_reg_sig = get_reg_sig(sim_time)
+
+            # ----------------------------------------------------
+            # Dispatch regulation
+            # ----------------------------------------------------
+
+            if (step_index - 1) % CONTROL_INTERVAL_STEPS == 0:
+
+                (
+                    reg_sig,
+                    target_delta_kw,
+                    estimated_dispatch_kw,
+                    dispatched_units,
+                    available_kw,
+                    retained_kw,
+                ) = dispatch_regulation_signal(
+                    fleet_data,
+                    raw_reg_sig
+                )
+
+            else:
+
+                try:
+                    reg_sig = float(raw_reg_sig)
+                except (TypeError, ValueError):
+                    reg_sig = 0.0
+
+                if pd.isna(reg_sig):
+                    reg_sig = 0.0
+
+                reg_sig = max(-1.0, min(1.0, reg_sig))
+
+                target_delta_kw = (
+                    reg_sig * REGULATION_CAPACITY_KW
+                )
+
+                active_mode = (
+                    "LOAD"
+                    if target_delta_kw > 0
+                    else "SHED"
+                )
+
+                active_homes = [
+                    home
+                    for home in fleet_data
+                    if home.get("override") == active_mode
+                ]
+
+                estimated_dispatch_kw = sum(
+                    home.get("dispatch_kw", 0.0)
+                    for home in active_homes
+                )
+
+                dispatched_units = len(active_homes)
+
+                available_kw = sum(
+                    _estimated_response_kw(
+                        home,
+                        active_mode
+                    )
+                    for home in fleet_data
+                    if (
+                        _load_eligible(home)
+                        if active_mode == "LOAD"
+                        else _shed_eligible(home)
+                    )
+                )
+
+                retained_kw = estimated_dispatch_kw
+
+            # ----------------------------------------------------
+            # Advance every active dwelling
+            # ----------------------------------------------------
+
+            step_results = list(
+                executor.map(
+                    update_home_worker,
+                    fleet_data
+                )
+            )
+
+            # ----------------------------------------------------
+            # Remove homes that failed this timestep
+            # ----------------------------------------------------
+
+            successful_homes = []
+
+            for home, result in zip(
+                fleet_data,
+                step_results
+            ):
+
+                if not result["success"]:
+
+                    failed_home_paths.add(
+                        home["path"]
+                    )
+
+                    continue
+
+                # Update state for successful home.
+                home["last_base_kw"] = _clean_power(
+                    result["base_kw"]
+                )
+
+                home["last_ctrl_kw"] = _clean_power(
+                    result["ctrl_kw"]
+                )
+
+                home["last_hpwh_kw"] = _clean_power(
+                    result["ctrl_hpwh_kw"]
+                )
+
+                home["last_tank_temp_c"] = (
+                    result["tank_temp_c"]
+                )
+
+                home["last_base_hpwh_kw"] = _clean_power(
+                    result["base_hpwh_kw"]
+                )
+
+                home["last_ctrl_hpwh_kw"] = _clean_power(
+                    result["ctrl_hpwh_kw"]
+                )
+
+                successful_homes.append(home)
+
+            fleet_data = successful_homes
+
+            # ----------------------------------------------------
+            # Check fleet failure threshold
+            # ----------------------------------------------------
+
+            failed_count = len(failed_home_paths)
+
+            if failed_count > initial_home_count / 2:
+                raise RuntimeError(
+                    f"Majority of buildings failed during "
+                    f"the simulation: "
+                    f"{failed_count}/{initial_home_count}."
+                )
+
+            if not fleet_data:
+                raise RuntimeError(
+                    "All buildings failed during the simulation."
+                )
+
+            # Update current active fleet size.
+            num_homes = len(fleet_data)
+
+            # ----------------------------------------------------
+            # Calculate fleet results
+            # ----------------------------------------------------
+
+            baseline_hpwh_fleet_kw = sum(
+                h["last_base_hpwh_kw"]
+                for h in fleet_data
+            )
+
+            controlled_hpwh_fleet_kw = sum(
+                h["last_ctrl_hpwh_kw"]
+                for h in fleet_data
+            )
+
+            hpwh_actual_delta_kw = (
+                controlled_hpwh_fleet_kw
+                - baseline_hpwh_fleet_kw
+            )
+
+            current_step_aggregate_power = sum(
+                home["last_ctrl_kw"]
                 for home in fleet_data
-                if (_load_eligible(home) if active_mode == "LOAD" else _shed_eligible(home))
-            )
-            retained_kw = estimated_dispatch_kw
-
-        # The dwellings are independent within this timestep. ``map`` keeps
-        # the work bounded and waits for all homes before the next dispatch.
-        step_results = list(executor.map(update_home_worker, fleet_data))
-
-        # Store simulated state for the next dispatch.  This is deliberately
-        # done only after every parallel worker has completed.
-        for home, result in zip(fleet_data, step_results):
-            home["last_base_kw"] = _clean_power(result["base_kw"])
-            home["last_ctrl_kw"] = _clean_power(result["ctrl_kw"])
-            # ``update_home_worker`` reports baseline and controlled HPWH
-            # power separately.  Dispatch eligibility must use the most
-            # recent controlled HPWH power, not a nonexistent generic key.
-            home["last_hpwh_kw"] = _clean_power(result["ctrl_hpwh_kw"])
-            home["last_tank_temp_c"] = result["tank_temp_c"]
-            home["last_base_hpwh_kw"] = _clean_power(result["base_hpwh_kw"])
-            home["last_ctrl_hpwh_kw"] = _clean_power(result["ctrl_hpwh_kw"])
-        baseline_hpwh_fleet_kw = sum(h["last_base_hpwh_kw"] for h in fleet_data)
-        controlled_hpwh_fleet_kw = sum(h["last_ctrl_hpwh_kw"] for h in fleet_data)
-        hpwh_actual_delta_kw = controlled_hpwh_fleet_kw - baseline_hpwh_fleet_kw        
-        current_step_aggregate_power = sum(home["last_ctrl_kw"] for home in fleet_data)
-        # actual_delta_kw = current_step_aggregate_power - baseline_fleet_kw
-        # tracking_error_kw = target_delta_kw - actual_delta_kw
-        tracking_error_kw = target_delta_kw - hpwh_actual_delta_kw
-
-        # Recalculate average fleet power for the next time step's logic
-        aggregate_power_kw = current_step_aggregate_power
-        average_power_kw = aggregate_power_kw / num_homes
-
-        # --- NEW: Log Fleet States for this Timestep ---
-        shed_count = sum(1 for h in fleet_data if h["override"] == "SHED")
-        load_count = sum(1 for h in fleet_data if h["override"] == "LOAD")
-        normal_count = sum(1 for h in fleet_data if h["override"] == "NORMAL")
-        
-        vpp_state_log.append({
-            "Time": sim_time,
-            "Regulation Signal": reg_sig,
-            "Regulation Capacity (kW)": REGULATION_CAPACITY_KW,
-            "Target Delta (kW)": target_delta_kw,
-            "Actual Delta (kW)": hpwh_actual_delta_kw,
-            "Tracking Error (kW)": tracking_error_kw,
-            # "Baseline Fleet Power (kW)": baseline_fleet_kw,
-            # "Controlled Fleet Power (kW)": current_step_aggregate_power,
-            "Available Capacity in Requested Direction (kW)": available_kw,
-            "Estimated Dispatched Capacity (kW)": estimated_dispatch_kw,
-            "Retained Capacity (kW)": retained_kw,
-            "Requested Dispatch Units": dispatched_units,
-            "Actual Average Power (kW)": average_power_kw,
-            "Aggregate Power (kW)": aggregate_power_kw,
-            "Units in NORMAL": normal_count,
-            "Units in SHED": shed_count,
-            "Units in LOAD": load_count,
-            "Baseline HPWH Fleet Power (kW)": baseline_hpwh_fleet_kw,
-            "Controlled HPWH Fleet Power (kW)": controlled_hpwh_fleet_kw,
-            "Actual HPWH Delta (kW)": hpwh_actual_delta_kw,
-            "Average Tank Temperature (C)": sum(h["last_tank_temp_c"] for h in fleet_data) / num_homes
-        })
-
-        if step_index % progress_interval == 0 or step_index == total_steps:
-            print(
-                f"Completed {step_index}/{total_steps} steps "
-                f"({sim_time:%Y-%m-%d %H:%M})",
-                flush=True,
             )
 
-    # --- 3. Finalize and Output Data ---
-    print("Simulation complete! Finalizing results...")
-    
+            tracking_error_kw = (
+                target_delta_kw
+                - hpwh_actual_delta_kw
+            )
+
+            aggregate_power_kw = (
+                current_step_aggregate_power
+            )
+
+            average_power_kw = (
+                aggregate_power_kw / num_homes
+            )
+
+            # ----------------------------------------------------
+            # Fleet state counts
+            # ----------------------------------------------------
+
+            shed_count = sum(
+                1
+                for h in fleet_data
+                if h["override"] == "SHED"
+            )
+
+            load_count = sum(
+                1
+                for h in fleet_data
+                if h["override"] == "LOAD"
+            )
+
+            normal_count = sum(
+                1
+                for h in fleet_data
+                if h["override"] == "NORMAL"
+            )
+
+            # ----------------------------------------------------
+            # Save VPP state
+            # ----------------------------------------------------
+
+            vpp_state_log.append({
+                "Time": sim_time,
+                "Regulation Signal": reg_sig,
+                "Regulation Capacity (kW)": REGULATION_CAPACITY_KW,
+                "Target Delta (kW)": target_delta_kw,
+                "Actual Delta (kW)": hpwh_actual_delta_kw,
+                "Tracking Error (kW)": tracking_error_kw,
+
+                "Available Capacity in Requested Direction (kW)":
+                    available_kw,
+
+                "Estimated Dispatched Capacity (kW)":
+                    estimated_dispatch_kw,
+
+                "Retained Capacity (kW)":
+                    retained_kw,
+
+                "Requested Dispatch Units":
+                    dispatched_units,
+
+                "Actual Average Power (kW)":
+                    average_power_kw,
+
+                "Aggregate Power (kW)":
+                    aggregate_power_kw,
+
+                "Units in NORMAL":
+                    normal_count,
+
+                "Units in SHED":
+                    shed_count,
+
+                "Units in LOAD":
+                    load_count,
+
+                "Baseline HPWH Fleet Power (kW)":
+                    baseline_hpwh_fleet_kw,
+
+                "Controlled HPWH Fleet Power (kW)":
+                    controlled_hpwh_fleet_kw,
+
+                "Actual HPWH Delta (kW)":
+                    hpwh_actual_delta_kw,
+
+                "Average Tank Temperature (C)":
+                    sum(
+                        h["last_tank_temp_c"]
+                        for h in fleet_data
+                    ) / num_homes,
+            })
+
+            # ----------------------------------------------------
+            # Progress message
+            # ----------------------------------------------------
+
+            if (
+                step_index % progress_interval == 0
+                or step_index == total_steps
+            ):
+                print(
+                    f"Completed {step_index}/{total_steps} steps "
+                    f"({sim_time:%Y-%m-%d %H:%M})",
+                    flush=True,
+                )
+
+    # ============================================================
+    # 5. Finalize Individual Building Results
+    # ============================================================
+
     CTRL_COLS = [
-        "Time", "Total Electric Power (kW)", "Total Electric Energy (kWh)",
-        "Temperature - Indoor (C)", 
+        "Time",
+        "Total Electric Power (kW)",
+        "Total Electric Energy (kWh)",
+        "Temperature - Indoor (C)",
         "Water Heating Electric Power (kW)",
         "Water Heating COP (-)",
         "Water Heating Deadband Upper Limit (C)",
         "Water Heating Deadband Lower Limit (C)",
         "Water Heating Heat Pump COP (-)",
         "Water Heating Control Temperature (C)",
-        "Hot Water Outlet Temperature (C)"
+        "Hot Water Outlet Temperature (C)",
     ]
-    
+
+    successful_finalizations = []
+
     for home_data in fleet_data:
+
         home_path = home_data["path"]
-        results_dir = os.path.join(home_path, "Results")
-        os.makedirs(results_dir, exist_ok=True)
-        
-        df_base, _, _ = home_data["base"].finalize()
-        df_ctrl, _, _ = home_data["sim"].finalize()
-        
-        df_base = remove_first_day(df_base, Start)
-        df_ctrl = remove_first_day(df_ctrl, Start)
-        
-        df_ctrl = df_ctrl[[c for c in CTRL_COLS if c in df_ctrl.columns]]
-        df_base = df_base[[c for c in CTRL_COLS if c in df_base.columns]]
-        
-        df_ctrl.to_csv(os.path.join(results_dir, 'hpwh_controlled.csv'), index=False)
-        df_base.to_csv(os.path.join(results_dir, 'hpwh_baseline.csv'), index=False)
+        building_name = os.path.basename(home_path)
 
-    # --- 4. Aggregate ---
-    aggregate_results(homes, RESULTS_DIR)
+        try:
 
-    # --- 5. Export VPP State Log ---
-    print("Saving VPP state log...")
-    df_vpp_log = pd.DataFrame(vpp_state_log)
-    vpp_log_path = os.path.join(RESULTS_DIR, filename + "_VPP_Fleet_States.csv")
-    df_vpp_log.to_csv(vpp_log_path, index=False)
-    print(f"VPP State Log saved to: {vpp_log_path}")
+            results_dir = os.path.join(
+                home_path,
+                "Results"
+            )
+
+            os.makedirs(
+                results_dir,
+                exist_ok=True
+            )
+
+            df_base, _, _ = (
+                home_data["base"].finalize()
+            )
+
+            df_ctrl, _, _ = (
+                home_data["sim"].finalize()
+            )
+
+            df_base = remove_first_day(
+                df_base,
+                Start
+            )
+
+            df_ctrl = remove_first_day(
+                df_ctrl,
+                Start
+            )
+
+            df_ctrl = df_ctrl[
+                [
+                    c
+                    for c in CTRL_COLS
+                    if c in df_ctrl.columns
+                ]
+            ]
+
+            df_base = df_base[
+                [
+                    c
+                    for c in CTRL_COLS
+                    if c in df_base.columns
+                ]
+            ]
+
+            df_ctrl.to_csv(
+                os.path.join(
+                    results_dir,
+                    "hpwh_controlled.csv"
+                ),
+                index=False
+            )
+
+            df_base.to_csv(
+                os.path.join(
+                    results_dir,
+                    "hpwh_baseline.csv"
+                ),
+                index=False
+            )
+
+            successful_finalizations.append(
+                home_path
+            )
+
+            print(
+                f"Building {building_name} results saved",
+                flush=True
+            )
+
+        except Exception as e:
+
+            failed_home_paths.add(home_path)
+
+            if len(failed_home_paths) == 1:
+                print(
+                    f"First finalization failure for "
+                    f"{building_name}: {repr(e)}",
+                    flush=True
+                )
+
+    # ============================================================
+    # 6. Check Finalization Failure Threshold
+    # ============================================================
+
+    failed_count = len(failed_home_paths)
+
+    if failed_count > initial_home_count / 2:
+        raise RuntimeError(
+            f"Majority of buildings failed by the end of "
+            f"the simulation: "
+            f"{failed_count}/{initial_home_count}."
+        )
+
+    if not successful_finalizations:
+        raise RuntimeError(
+            "No building results were successfully finalized."
+        )
+
+    # ============================================================
+    # 7. Aggregate Successful Results
+    # ============================================================
+
+    aggregate_results(
+        successful_finalizations,
+        RESULTS_DIR
+    )
+
+    # ============================================================
+    # 8. Export VPP State Log
+    # ============================================================
+
+    df_vpp_log = pd.DataFrame(
+        vpp_state_log
+    )
+
+    vpp_log_path = os.path.join(
+        RESULTS_DIR,
+        filename + "_VPP_Fleet_States.csv"
+    )
+
+    df_vpp_log.to_csv(
+        vpp_log_path,
+        index=False
+    )
+
+    # ============================================================
+    # 9. Final Message
+    # ============================================================
+
+    print(
+        "Simulation finished.",
+        flush=True
+    )
+
     return {
         "configuration": configuration,
-        "homes_simulated": num_homes,
+        "homes_simulated": len(successful_finalizations),
+        "homes_failed": failed_count,
         "vpp_log_path": vpp_log_path,
     }
-
 
 if __name__ == "__main__":
     main()

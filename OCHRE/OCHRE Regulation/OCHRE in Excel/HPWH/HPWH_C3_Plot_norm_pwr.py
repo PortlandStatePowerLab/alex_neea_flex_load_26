@@ -27,7 +27,7 @@ baseline_file = os.path.join(
 controlled_file = os.path.join(
     ready_data_dir, f"{INPUT_FILE_ROOT}_controlled_WH_power.csv"
 )
-reg_sig_file = os.path.join(project_dir, "Reg Sig", "RegA-ochre.csv")
+reg_sig_file = os.path.join(project_dir, "Reg Sig", "rega_filtered.csv")
 plot_file = os.path.join(
     ready_data_dir, f"{INPUT_FILE_ROOT}_normalized_power_plot.png"
 )
@@ -118,36 +118,36 @@ def main():
             frame["Time"].dt.strftime("1900-01-01 %H:%M:%S")
         )
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(
-        power["Time"].tail(PLOT_POINTS),
-        power["controlled_minus_baseline"].tail(PLOT_POINTS),
-        label="controlled - baseline HPWH power",
-        color="green",
-    )
-    ax.axhline(0.0, color="black", linewidth=1, alpha=0.6)
-    ax.set_title("Average Water-Heating Power Response per Household")
-    ax.set_xlabel("Time")
-    ax.set_ylabel("Controlled - Baseline Power (kW)")
+    # fig, ax = plt.subplots(figsize=(8, 5))
+    # ax.plot(
+    #     power["Time"].tail(PLOT_POINTS),
+    #     power["controlled_minus_baseline"].tail(PLOT_POINTS),
+    #     label="controlled - baseline HPWH power",
+    #     color="green",
+    # )
+    # ax.axhline(0.0, color="black", linewidth=1, alpha=0.6)
+    # ax.set_title("Average Water-Heating Power Response per Household")
+    # ax.set_xlabel("Time")
+    # ax.set_ylabel("Controlled - Baseline Power (kW)")
 
-    ax2 = ax.twinx()
-    ax2.plot(
-        signal["Time"].tail(PLOT_POINTS),
-        signal["signal"].tail(PLOT_POINTS),
-        label="regulation signal",
-        color="mediumorchid",
-        linestyle=":",
-    )
-    ax2.set_ylabel("Normalized Regulation Signal")
-    ax2.set_ylim(-1.1, 1.1)
+    # ax2 = ax.twinx()
+    # ax2.plot(
+    #     signal["Time"].tail(PLOT_POINTS),
+    #     signal["signal"].tail(PLOT_POINTS),
+    #     label="regulation signal",
+    #     color="mediumorchid",
+    #     linestyle=":",
+    # )
+    # ax2.set_ylabel("Normalized Regulation Signal")
+    # ax2.set_ylim(-1.1, 1.1)
 
-    lines1, labels1 = ax.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-    ax.xaxis.set_major_locator(mdates.HourLocator(interval=4))
-    fig.autofmt_xdate()
-    fig.savefig(plot_file, dpi=300, bbox_inches="tight")
+    # lines1, labels1 = ax.get_legend_handles_labels()
+    # lines2, labels2 = ax2.get_legend_handles_labels()
+    # ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
+    # ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    # ax.xaxis.set_major_locator(mdates.HourLocator(interval=4))
+    # fig.autofmt_xdate()
+    # fig.savefig(plot_file, dpi=300, bbox_inches="tight")
 
     calculate_correlation(power, signal)
     # plt.show()

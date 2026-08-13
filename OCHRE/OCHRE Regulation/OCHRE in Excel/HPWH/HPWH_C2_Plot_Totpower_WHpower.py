@@ -42,7 +42,7 @@ output_file_4 = os.path.join(script_dir, "Ready_data", input_file_root, output_f
 photo_file_1 = os.path.join(script_dir, "Ready_data", input_file_root, input_file_root + "_WH_power_plot.png")
 photo_file_2 = os.path.join(script_dir, "Ready_data", input_file_root, input_file_root + "_Total_power_plot.png")
 
-reg_sig_file = os.path.join(project_dir, "Reg Sig", "RegA-ochre.csv")
+reg_sig_file = os.path.join(project_dir, "Reg Sig", "rega_filtered.csv")
 
 #Saves the average of each column as a new row
 def save_avg(file):
