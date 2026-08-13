@@ -50,8 +50,8 @@ def set_t_res(value, file):
 
     file.write_text(new_text)
 
-    print(f"Updated t_res to {value} in:")
-    print(file)
+    # print(f"Updated t_res to {value} in:")
+    # print(file)
 
 input_map = {
     "Heat Pump Water Heater": [
@@ -99,11 +99,11 @@ t_res = inputs.Range("N39").Value
 
 b2_file = project_dir / "HPWH" / "HPWH_B2_EnergySched_LoadShaping.py"
 
-print(f"Main script: {Path(__file__).resolve()}")
-print(f"Project directory: {project_dir}")
-print(f"B2 file: {b2_file}")
-print(f"B2 exists: {b2_file.exists()}")
-print(f"Excel t_res: {t_res}")
+# print(f"Main script: {Path(__file__).resolve()}")
+# print(f"Project directory: {project_dir}")
+# print(f"B2 file: {b2_file}")
+# print(f"B2 exists: {b2_file.exists()}")
+# print(f"Excel t_res: {t_res}")
 
 set_t_res(t_res, b2_file)
 
@@ -127,7 +127,7 @@ if updated_t_res != float(t_res):
         f"Excel value = {t_res}, B2 value = {updated_t_res}"
     )
 
-print(f"Verified B2 t_res = {updated_t_res}")
+# print(f"Verified B2 t_res = {updated_t_res}")
 
 
 from HPWH import HPWH_B2_EnergySched_LoadShaping as run_ochre

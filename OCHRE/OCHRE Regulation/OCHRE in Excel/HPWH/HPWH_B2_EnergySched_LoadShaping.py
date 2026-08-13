@@ -16,13 +16,21 @@ import ochre
 from math import isfinite
 import time
 
-
 import sys
 import threading
 
+import warnings
 
-class WarningFilter:
-    """Suppress warning messages while allowing normal output and errors."""
+warnings.filterwarnings("ignore")
+
+
+class OCHREOutputFilter:
+    """
+    Suppress OCHRE's normal console output while preserving:
+      - user/application output
+      - WARNING/ERROR tracebacks
+      - simulation progress messages
+    """
 
     def __init__(self, stream):
         self.stream = stream
@@ -38,12 +46,13 @@ class WarningFilter:
 
         self.local.buffer += text
 
-        # Process complete lines.
         while "\n" in self.local.buffer:
-            line, self.local.buffer = self.local.buffer.split("\n", 1)
 
-            # Suppress anything explicitly identified as a warning.
-            if "WARNING" in line.upper():
+            line, self.local.buffer = (
+                self.local.buffer.split("\n", 1)
+            )
+
+            if self._suppress(line):
                 continue
 
             with self.lock:
@@ -54,21 +63,66 @@ class WarningFilter:
 
     def flush(self):
         if hasattr(self.local, "buffer"):
+
             if self.local.buffer:
-                with self.lock:
-                    self.stream.write(self.local.buffer)
-                    self.stream.flush()
+                line = self.local.buffer
+
+                if not self._suppress(line):
+                    with self.lock:
+                        self.stream.write(line)
+                        self.stream.flush()
 
                 self.local.buffer = ""
 
         self.stream.flush()
 
+    def _suppress(self, line):
+
+        stripped = line.strip()
+
+        if not stripped:
+            return False
+
+        upper_line = stripped.upper()
+
+        # --------------------------------------------------------
+        # Suppress all explicit WARNING messages
+        # --------------------------------------------------------
+
+        if "WARNING:" in upper_line:
+            return True
+
+        # --------------------------------------------------------
+        # Suppress OCHRE initialization/status messages
+        # --------------------------------------------------------
+
+        if "OCHRE V" in upper_line:
+            return True
+
+        if stripped == "Dwelling Initialized":
+            return True
+
+        if stripped.startswith("Initializing Base_"):
+            return True
+
+        if stripped.startswith("Initializing Ctrl_"):
+            return True
+
+        # OCHRE dwelling timestamp/status lines
+        if (
+            ("Base_bldg" in stripped or "Ctrl_bldg" in stripped)
+            and "2018-" in stripped
+        ):
+            return True
+
+        return False
     def __getattr__(self, name):
         return getattr(self.stream, name)
-    
-sys.stdout = WarningFilter(sys.stdout)
-sys.stderr = WarningFilter(sys.stderr)
 
+sys.stdout = OCHREOutputFilter(sys.stdout)
+sys.stderr = OCHREOutputFilter(sys.stderr)
+
+    
 #########################################
 # USER SETTINGS
 #########################################
@@ -114,6 +168,7 @@ Start = dt.datetime(2018, 1, 11, 0, 0)
 Duration = 2  # days
 t_res = 30.0  # minutes
 
+NUM_HOMES = 100
 
 # The regulation signal is normalized to [-1, 1].  It is converted to a kW
 # request using REGULATION_CAPACITY_KW:
@@ -543,7 +598,10 @@ def init_fleet_worker(home, build_num, num_builds):
     """Worker function to initialize dwellings in parallel."""
 
     try:
-        base_dw, sim_dw = initialize_home(home, WEATHER_FILE)
+        base_dw, sim_dw = initialize_home(
+            home,
+            WEATHER_FILE
+        )
 
         return {
             "success": True,
@@ -568,7 +626,6 @@ def init_fleet_worker(home, build_num, num_builds):
             "path": home,
             "error": repr(e),
         }
-
 
       
 def update_home_worker(home_data):
@@ -647,6 +704,7 @@ def main(parameters=None):
         )
 
     homes = find_all_homes(INPUT_DIR)
+    homes = homes[:NUM_HOMES]
 
     if not homes:
         raise RuntimeError(
@@ -1096,7 +1154,9 @@ def main(parameters=None):
 
     successful_finalizations = []
 
+    i = 0
     for home_data in fleet_data:
+        i += 1
 
         home_path = home_data["path"]
         building_name = os.path.basename(home_path)
@@ -1167,10 +1227,15 @@ def main(parameters=None):
                 home_path
             )
 
-            print(
-                f"Building {building_name} results saved",
-                flush=True
-            )
+            if i % 50 == 0 or i == len(fleet_data):
+                print(
+                    f"Finalized {i}/{len(fleet_data)} homes",
+                    flush=True
+                )
+            # print(
+            #     f"Building {building_name} results saved",
+            #     flush=True
+            # )
 
         except Exception as e:
 
