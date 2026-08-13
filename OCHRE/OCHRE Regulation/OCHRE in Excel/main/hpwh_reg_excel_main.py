@@ -12,7 +12,6 @@ if str(project_dir) not in sys.path:
     sys.path.insert(0, str(project_dir))
 
 from HPWH import HPWH_A3_adjustXML as adj_xml
-from HPWH import HPWH_B2_EnergySched_LoadShaping as run_ochre
 from HPWH import HPWH_C3_Plot_norm_pwr as get_reg
 
 
@@ -30,22 +29,29 @@ from HPWH import HPWH_C3_Plot_norm_pwr as get_reg
 # send correlation from c3 to excel
 
 def set_t_res(value, file):
-    """Modify t_res in HPWH_B2_EnergySched_LoadShaping.py"""
+    """Update t_res in the B2 OCHRE script."""
+
+    value = float(value)
 
     text = file.read_text()
 
-    text = re.sub(
-        r"(t_res\s*=\s*)[-0-9.]+",
+    new_text, count = re.subn(
+        r"(^\s*t_res\s*=\s*)[-+]?\d*\.?\d+",
         rf"\g<1>{value}",
         text,
+        count=1,
+        flags=re.MULTILINE
     )
 
-    try:
-        file.write_text(text)
-    except Exception as e:
-        raise RuntimeError(
-            f"Could not modify {file}: {e}"
-        ) from e
+    if count == 0:
+        raise ValueError(
+            f"Could not find a t_res assignment in:\n{file}"
+        )
+
+    file.write_text(new_text)
+
+    print(f"Updated t_res to {value} in:")
+    print(file)
 
 input_map = {
     "Heat Pump Water Heater": [
@@ -91,7 +97,41 @@ month_load_amt = inputs.Range("M33").Value
 
 t_res = inputs.Range("N39").Value
 
-set_t_res(t_res, project_dir / "HPWH" / "HPWH_B2_EnergySched_LoadShaping.py")
+b2_file = project_dir / "HPWH" / "HPWH_B2_EnergySched_LoadShaping.py"
+
+print(f"Main script: {Path(__file__).resolve()}")
+print(f"Project directory: {project_dir}")
+print(f"B2 file: {b2_file}")
+print(f"B2 exists: {b2_file.exists()}")
+print(f"Excel t_res: {t_res}")
+
+set_t_res(t_res, b2_file)
+
+# Verify that the value was actually written
+updated_text = b2_file.read_text()
+
+match = re.search(
+    r"^\s*t_res\s*=\s*([-+]?\d*\.?\d+)",
+    updated_text,
+    flags=re.MULTILINE
+)
+
+if match is None:
+    raise RuntimeError("t_res could not be verified in the B2 file.")
+
+updated_t_res = float(match.group(1))
+
+if updated_t_res != float(t_res):
+    raise RuntimeError(
+        f"t_res update failed. "
+        f"Excel value = {t_res}, B2 value = {updated_t_res}"
+    )
+
+print(f"Verified B2 t_res = {updated_t_res}")
+
+
+from HPWH import HPWH_B2_EnergySched_LoadShaping as run_ochre
+
 
 pop_num = inputs.Range("K35").Value
 adopt_rate = inputs.Range("K37").Value
