@@ -266,3 +266,5 @@ OCHRE/OCHRE in Excel/HPWH/__pycache__/
 OCHRE/OCHRE in Excel/Metadata/
 OCHRE/OCHRE in Excel/Weather/
 OCHRE/OCHRE in Excel/main/__pycache__/
+# Project-specific Python virtual environments.
+.venv*/
