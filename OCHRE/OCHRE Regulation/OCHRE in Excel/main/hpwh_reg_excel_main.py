@@ -144,11 +144,8 @@ def main():
 
 
     # future use
-    start_time = inputs.Range("K38").Value
-    end_time = inputs.Range("K39").Value
     month_load_amt = inputs.Range("M34").Value
-    pop_num = inputs.Range("K34").Value
-    adopt_rate = inputs.Range("K36").Value
+    sample = inputs.Range("K35")
 
 
     FL_type = inputs.Range("I6").Value
@@ -163,7 +160,7 @@ def main():
     }
 
 
-    t_res = inputs.Range("K41").Value
+    t_res = inputs.Range("K38").Value
 
     set_t_res(t_res, b2_file)
     check_t_res(t_res, b2_file)

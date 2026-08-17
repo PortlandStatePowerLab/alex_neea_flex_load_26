@@ -165,7 +165,7 @@ XML_ADDRESS = "home.xml"
 CSV_ADDRESS = "in.schedules.csv"
 
 
-REG_TYPE = 'RegD'
+REG_TYPE = 'RegA'
 # The calculator-owned signal folder is the direct parent of HPWH.
 REG_DIR = os.path.join(EXCEL_DIR, "Reg Sig")
 REG_ADDRESS = f"{REG_TYPE}-ochre.csv"
@@ -176,7 +176,7 @@ Start = dt.datetime(2018, 1, 11, 0, 0)
 Duration = 2  # days
 t_res = 1.0  # minutes
 
-NUM_HOMES = 10
+# NUM_HOMES = 10
 
 # The regulation signal is normalized to [-1, 1].  It is converted to a kW
 # request using REGULATION_CAPACITY_KW:
@@ -201,6 +201,10 @@ CONTROL_INTERVAL_STEPS = max(1, round(CONTROL_INTERVAL_MINUTES / t_res))
 SHED_MIN_TANK_TEMP_F = 120
 LOAD_TARGET_TANK_TEMP_F = 130
 DEFAULT_LOAD_RESPONSE_KW = 3.0
+
+# Limit the number of previously shed HPWHs returned to normal per control
+# interval. This spreads thermal recovery instead of releasing the fleet at once.
+MAX_SHED_RELEASES_PER_INTERVAL = 4
 
 
 # HPWH control parameters (°F)
@@ -436,33 +440,103 @@ def dispatch_regulation_signal(fleet_data, reg_sig):
     target_delta_kw = reg_sig * REGULATION_CAPACITY_KW
     requested_mode = "LOAD" if target_delta_kw > 0 else "SHED"
 
-    # A neutral or reversed request releases old commands immediately.  For a
-    # continuing request, retain homes that are still within their hold time.
+    # A SHED request may end abruptly. Do not release every shed home at once:
+    # hold the remaining shed homes temporarily and return only a small batch
+    # to normal operation each control interval.
     retained_kw = 0.0
-    for home in fleet_data:
-        if home.get("lockout_steps", 0) > 0:
-            home["lockout_steps"] = max(0, home["lockout_steps"] - CONTROL_INTERVAL_STEPS)
 
+    for home in fleet_data:
+        home["released_this_interval"] = False
+
+        if home.get("lockout_steps", 0) > 0:
+            home["lockout_steps"] = max(
+                0,
+                home["lockout_steps"] - CONTROL_INTERVAL_STEPS
+            )
+
+        # On a neutral or positive request, keep SHED homes in their present
+        # state for now. They are released below in controlled batches.
+        if (
+            home.get("override") == "SHED"
+            and target_delta_kw >= 0
+        ):
+            continue
+
+        # Other incompatible commands can still be released immediately.
         if target_delta_kw == 0 or home.get("override") != requested_mode:
             home["override"] = "NORMAL"
             home["lockout_steps"] = 0
+
         elif home.get("override") == requested_mode:
             if home.get("lockout_steps", 0) > 0:
-                retained_kw += home.get("dispatch_kw", _estimated_response_kw(home, requested_mode))
+                retained_kw += home.get(
+                    "dispatch_kw",
+                    _estimated_response_kw(home, requested_mode)
+                )
             else:
-                # Its minimum hold has ended; re-evaluate it with the rest of
-                # the fleet instead of silently leaving an old command active.
                 home["override"] = "NORMAL"
+
+    # Gradually release shed homes when the request is neutral or turns into
+    # a positive/load request. Always release tanks at or below the comfort
+    # threshold, even if that exceeds the normal batch size.
+    if target_delta_kw >= 0:
+        shed_homes = [
+            home for home in fleet_data
+            if home.get("override") == "SHED"
+        ]
+
+        urgent_releases = [
+            home for home in shed_homes
+            if home.get("last_tank_temp_c", TbaselineC)
+            <= SHED_MIN_TANK_TEMP_C
+        ]
+
+        normal_releases = [
+            home for home in shed_homes
+            if home not in urgent_releases
+        ]
+
+        # Release cooler tanks first for comfort. Dispatch count breaks ties
+        # so the same homes are not always favored.
+        normal_releases.sort(
+            key=lambda home: (
+                home.get("last_tank_temp_c", TbaselineC),
+                home.get("dispatch_count", 0),
+            )
+        )
+
+        selected_releases = urgent_releases + normal_releases[
+            :max(0, MAX_SHED_RELEASES_PER_INTERVAL - len(urgent_releases))
+        ]
+
+        for home in selected_releases:
+            home["override"] = "NORMAL"
+            home["lockout_steps"] = 0
+            home["released_this_interval"] = True
 
     if target_delta_kw == 0:
         return reg_sig, target_delta_kw, 0.0, 0, 0.0, 0.0
 
     if requested_mode == "SHED":
-        candidates = [home for home in fleet_data if _shed_eligible(home)]
+        candidates = [
+            home for home in fleet_data
+            if (
+                home.get("override") == "NORMAL"
+                and not home.get("released_this_interval", False)
+                and _shed_eligible(home)
+            )
+        ]
         # Turn off the largest operating units first, subject to comfort.
         candidates.sort(key=lambda home: (-_estimated_response_kw(home, "SHED"), home.get("dispatch_count", 0)))
     else:
-        candidates = [home for home in fleet_data if _load_eligible(home)]
+        candidates = [
+            home for home in fleet_data
+            if (
+                home.get("override") == "NORMAL"
+                and not home.get("released_this_interval", False)
+                and _load_eligible(home)
+            )
+        ]
         # Pre-cool the warmest homes first.
         candidates.sort(key=lambda home: (home.get("last_tank_temp_c", TbaselineC), home.get("dispatch_count", 0)))
 
@@ -511,14 +585,14 @@ def find_all_homes(base_dir):
                 homes.append(home_path)
     return homes
 
-def remove_first_day(df, start_date):
-    if 'Time' not in df.columns:
-        df = df.reset_index()
-        if 'index' in df.columns:
-            df.rename(columns={'index': 'Time'}, inplace=True)
-    df['Time'] = pd.to_datetime(df['Time'], errors='coerce')
-    first_day_end = start_date + pd.Timedelta(days=1)
-    return df[df['Time'] >= first_day_end].copy()
+# def remove_first_day(df, start_date):
+#     if 'Time' not in df.columns:
+#         df = df.reset_index()
+#         if 'index' in df.columns:
+#             df.rename(columns={'index': 'Time'}, inplace=True)
+#     df['Time'] = pd.to_datetime(df['Time'], errors='coerce')
+#     first_day_end = start_date + pd.Timedelta(days=1)
+#     return df[df['Time'] >= first_day_end].copy()
 
 def aggregate_results(homes, work_dir):
     all_ctrl, all_base = [], []
@@ -585,6 +659,15 @@ def initialize_home(home_path, weather_file_path):
         "weather_file": weather_file_path,
         # Level 6 retains every column exported below (including energy),
         # while avoiding the level-7 schedule/debug results at every minute.
+        "initialization_time": dt.timedelta(
+            weeks=0,
+            days=1,
+            hours=0,
+            minutes=0,
+            seconds=0,
+            milliseconds=0,
+            microseconds=0
+        ),
         "verbosity": 6,
         "Equipment": {
             "Water Heating": {
@@ -712,7 +795,7 @@ def main(parameters=None):
         )
 
     homes = find_all_homes(INPUT_DIR)
-    homes = homes[:NUM_HOMES]
+    # homes = homes[:NUM_HOMES]
 
     if not homes:
         raise RuntimeError(
@@ -1188,15 +1271,15 @@ def main(parameters=None):
                 home_data["sim"].finalize()
             )
 
-            df_base = remove_first_day(
-                df_base,
-                Start
-            )
+            # df_base = remove_first_day(
+            #     df_base,
+            #     Start
+            # )
 
-            df_ctrl = remove_first_day(
-                df_ctrl,
-                Start
-            )
+            # df_ctrl = remove_first_day(
+            #     df_ctrl,
+            #     Start
+            # )
 
             df_ctrl = df_ctrl[
                 [
