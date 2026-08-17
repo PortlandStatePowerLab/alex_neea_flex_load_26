@@ -92,6 +92,12 @@ class OCHREOutputFilter:
         if "WARNING:" in upper_line:
             return True
 
+        if "Removing previous results file:" in stripped:
+            return True
+
+        if "HPWH All Portland Input Files" in stripped:
+            return True
+
         # --------------------------------------------------------
         # Suppress OCHRE initialization/status messages
         # --------------------------------------------------------
@@ -158,15 +164,17 @@ METADATA_DIR = os.path.join(OCHRE_DIR, "Metadata")
 XML_ADDRESS = "home.xml"
 CSV_ADDRESS = "in.schedules.csv"
 
+
+REG_TYPE = 'RegD'
 # The calculator-owned signal folder is the direct parent of HPWH.
 REG_DIR = os.path.join(EXCEL_DIR, "Reg Sig")
-REG_ADDRESS = "RegA-ochre.csv"
+REG_ADDRESS = f"{REG_TYPE}-ochre.csv"
 
 
 # Simulation parameters
 Start = dt.datetime(2018, 1, 11, 0, 0)
 Duration = 2  # days
-t_res = 30.0  # minutes
+t_res = 1.0  # minutes
 
 NUM_HOMES = 10
 
@@ -341,7 +349,7 @@ def save_sig(reg_sig, start_time):
     os.makedirs(REG_DIR, exist_ok=True)
 
     saved_sig.to_csv(
-        os.path.join(REG_DIR, "rega_filtered.csv"),
+        os.path.join(REG_DIR, f"{REG_TYPE}_filtered.csv"),
         index=False
     )
 
@@ -784,7 +792,7 @@ def main(parameters=None):
             # Report every 5 seconds.
             elif (
                 first_building_initialized
-                and time.monotonic() - last_report_time >= 5
+                and time.monotonic() - last_report_time >= 8
             ):
 
                 if initialized_count != last_reported_count:

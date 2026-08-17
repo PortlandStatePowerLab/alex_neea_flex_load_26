@@ -11,6 +11,10 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
 
+import warnings
+
+warnings.filterwarnings("ignore")
+
 
 # Must match ``filename`` in HPWH_B2_EnergySched_LoadShaping.py.
 INPUT_FILE_ROOT = "2025_All_630_1_45_1700_1_45_OS"
@@ -81,10 +85,11 @@ def calculate_correlation(power, signal):
         return float("nan")
 
     correlation = merged["controlled_minus_baseline"].corr(merged["signal"])
-    print(
-        "Correlation between controlled-baseline power and regulation signal: "
-        f"{correlation:.4f}"
-    )
+    # print(
+    #     "Correlation between controlled-baseline power and regulation signal: "
+    #     f"{correlation:.4f}"
+    # )
+    print("Correlation calculated successfully.")
     return correlation
 
 
@@ -149,7 +154,7 @@ def main():
     # fig.autofmt_xdate()
     # fig.savefig(plot_file, dpi=300, bbox_inches="tight")
 
-    calculate_correlation(power, signal)
+    return calculate_correlation(power, signal)
     # plt.show()
 
 

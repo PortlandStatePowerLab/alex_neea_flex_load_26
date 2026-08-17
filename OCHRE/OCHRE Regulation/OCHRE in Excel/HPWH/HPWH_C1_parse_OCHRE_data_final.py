@@ -57,9 +57,9 @@ output_file_4 = os.path.join(script_dir, "Ready_data", input_file_root, output_f
 # Check for file path and create if does not exist
 if not os.path.exists(folder_path):
     os.makedirs(folder_path) # os.mkdir() creates only one level; os.makedirs() creates intermediate parents
-    print(f"Directory created: {folder_path}")
-else:
-    print(f"Directory already exists: {folder_path}")
+    # print(f"Directory created: {folder_path}")
+# else:
+    # print(f"Directory already exists: {folder_path}")
 
 ############################################################################
 #                             Program Start                                #
@@ -75,10 +75,10 @@ def process_data(input_file, output_file, wanted_col):
     reader = csv.DictReader(input_file)
 
     # Access the columns attribute
-    print("Column Titles:")
+    # print("Column Titles:")
     # The .columns attribute returns an Index object, which can be printed directly or iterated
-    for col in df.columns:
-        print(f"- {col}")
+    # for col in df.columns:
+    #     print(f"- {col}")
     # convert time column to a usable datetime fomat
     df['time'] = pd.to_datetime(df['Time'], errors='coerce')
     #df['time'] = convert_custom_datetime(df['Time'])

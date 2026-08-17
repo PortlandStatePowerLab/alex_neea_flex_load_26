@@ -268,3 +268,5 @@ OCHRE/OCHRE in Excel/Weather/
 OCHRE/OCHRE in Excel/main/__pycache__/
 # Project-specific Python virtual environments.
 .venv*/
+OCHRE/OCHRE Regulation/OCHRE in Excel - Copy/*
+OCHRE/OCHRE Regulation/OCHRE in Excel - Zip - 81426/*
