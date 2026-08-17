@@ -223,7 +223,12 @@ AC Filtered/
 AC Input Files/
 Ready Data/
 *.csv
+!OCHRE/RegA Signal/RegA-ochre.csv
+!OCHRE/Metadata/OR_upgrade0.csv
+!OCHRE/Metadata/OR_upgrade9.csv
+!OCHRE/Weather/Weather.csv
 *.png
+*.zip
 OCHRE/OCHRE Regulation/AC/Results/
 OCHRE/OCHRE Regulation/OCHRE in Excel/HPWH/HPWH All Input Files/
 OCHRE/OCHRE Regulation/OCHRE in Excel/HPWH/HPWH All Portland Input Files/
