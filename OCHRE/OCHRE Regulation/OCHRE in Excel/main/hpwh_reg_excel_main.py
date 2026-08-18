@@ -5,11 +5,15 @@ import os
 import sys
 from pathlib import Path
 import re
+from datetime import datetime
 
 base_dir = Path(__file__).resolve().parent
 project_dir = base_dir.parent
 if str(project_dir) not in sys.path:
     sys.path.insert(0, str(project_dir))
+
+OLD_BLDG_DIR = os.path.join(base_dir, "HPWH All Portland Input Files")
+
 
 
 # get type of fl
@@ -133,6 +137,22 @@ def check_reg_type(reg, b2_file):
         raise RuntimeError("REG_TYPE could not be verified in the B2 file.")
 
 
+def delete_old_graphs(worksheet):
+    """Delete graphs inserted by this script, including legacy image names."""
+
+    graph_names = (
+        "HPWH Slow Regulation Graph",
+        "HPWH Fast Regulation Graph",
+    )
+
+    for graph_name in graph_names:
+        try:
+            worksheet.Shapes.Item(graph_name).Delete()
+        except Exception:
+            # Excel raises a COM error when a shape with this name is absent.
+            pass
+
+
 def main():
 
     b2_file = project_dir / "HPWH" / "HPWH_B2_EnergySched_LoadShaping.py"
@@ -142,6 +162,10 @@ def main():
 
     inputs = wb.Worksheets("Calculator")
 
+    if inputs.Range("N37").Value == "Yes":
+        subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_D1_delete_prev_results.py")], check=True)
+
+    delete_old_graphs(inputs)
 
     # future use
     month_load_amt = inputs.Range("M34").Value
@@ -168,33 +192,99 @@ def main():
     set_reg_type("RegA", b2_file)
     check_reg_type("RegA", b2_file)
 
+    # Choose the run ID once. RegA/RegD suffixes keep the two result sets apart.
+    base_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     from HPWH import HPWH_B2_EnergySched_LoadShaping as run_ochre
     from HPWH import HPWH_A3_adjustXML as adj_xml
     adj_xml.main(params)
-    run_ochre.main(params)
-    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C1_parse_OCHRE_data_final.py")], check=True)
-    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C2_Plot_Totpower_WHpower.py")], check=True)
+    run_id = f"{base_run_id}_Slow"
+    run_ochre.main(params, run_id=run_id)
+    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C1_parse_OCHRE_data_final.py"), "--run-id", run_id], check=True)
+    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C2_Plot_Totpower_WHpower.py"), "--run-id", run_id], check=True)
+    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C3_Plot_norm_pwr.py"), "--run-id", run_id], check=True)
     # from HPWH import HPWH_C3_Plot_norm_pwr as get_reg
     # reg_corr = get_reg.main()
     from HPWH import HPWH_C4_pjm_performance as pjm_scores
-    pjm_score = pjm_scores.main()
+    pjm_score = pjm_scores.main(run_id)
 
     inputs.Range("N30").Value = pjm_score * 100
+
+    image_path = (
+            project_dir
+            / "HPWH"
+            / "Ready_data"
+            / run_id
+            / f"{run_id}_normalized_power_plot.png"
+        )
+
+    if not image_path.is_file():
+        raise FileNotFoundError(f"Plot image was not created: {image_path}")
+
+    anchor = inputs.Range("R25")
+
+    picture = inputs.Shapes.AddPicture(
+        str(image_path.resolve()),
+        False,  # LinkToFile
+        True,   # SaveWithDocument
+        anchor.Left,
+        anchor.Top,
+        -1,     # Preserve original width
+        -1      # Preserve original height
+    )
+    picture.Name = "HPWH Slow Regulation Graph"
+
+    # Optional resizing:
+    picture.LockAspectRatio = True
+    picture.Width = 600
 
 
     set_reg_type("RegD", b2_file)
     check_reg_type("RegD", b2_file)
 
     from HPWH import HPWH_B2_EnergySched_LoadShaping as run_ochre
-    run_ochre.main(params)
-    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C1_parse_OCHRE_data_final.py")], check=True)
-    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C2_Plot_Totpower_WHpower.py")], check=True)
+    run_id = f"{base_run_id}_Fast"
+    run_ochre.main(params, run_id=run_id)
+    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C1_parse_OCHRE_data_final.py"), "--run-id", run_id], check=True)
+    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C2_Plot_Totpower_WHpower.py"), "--run-id", run_id], check=True)
+    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C3_Plot_norm_pwr.py"), "--run-id", run_id], check=True)
     from HPWH import HPWH_C4_pjm_performance as pjm_scores
     # reg_corr = get_reg.main()
-    pjm_score = pjm_scores.main()
+    pjm_score = pjm_scores.main(run_id)
 
     inputs.Range("N29").Value = pjm_score * 100
 
+
+    image_path = (
+        project_dir
+        / "HPWH"
+        / "Ready_data"
+        / run_id
+        / f"{run_id}_normalized_power_plot.png"
+    )
+
+    if not image_path.is_file():
+        raise FileNotFoundError(f"Plot image was not created: {image_path}")
+
+    anchor = inputs.Range("R3")
+
+    picture = inputs.Shapes.AddPicture(
+        str(image_path.resolve()),
+        False,  # LinkToFile
+        True,   # SaveWithDocument
+        anchor.Left,
+        anchor.Top,
+        -1,     # Preserve original width
+        -1      # Preserve original height
+    )
+    picture.Name = "HPWH Fast Regulation Graph"
+
+    # Optional resizing:
+    picture.LockAspectRatio = True
+    picture.Width = 600
+
+    if os.path.isdir(OLD_BLDG_DIR):
+        shutil.rmtree(OLD_BLDG_DIR)
 
     excel.Calculate()
 

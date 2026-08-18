@@ -11,9 +11,10 @@ Created on Wed Sep 24 14:46:47 2025
 
 
 import pandas as pd
-from datetime import datetime
 import csv
 import os
+import argparse
+import datetime
 
 # Converts the datetime information in the HEMS data to usable datetimes
 def convert_custom_datetime(series):
@@ -28,38 +29,6 @@ def convert_custom_datetime(series):
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_dir = os.path.dirname(script_dir)
-
-input_file_root = "2025_All_630_1_45_1700_1_45_OS"
-
-input_file_name1 = input_file_root + "_baseline"
-input_file_name2 = input_file_root + "_controlled"
-input_file_1  = os.path.join(script_dir, input_file_name1 +".csv")
-input_file_2  = os.path.join(script_dir, input_file_name2 +".csv")
-
-output_append_WHpower = "_WH_power"
-output_file_name1 = input_file_name1 + output_append_WHpower + ".csv"
-output_file_name2 = input_file_name2 + output_append_WHpower + ".csv"
-folder_path = os.path.join(script_dir, "Ready_data", input_file_root)
-output_file_1 = os.path.join(script_dir, "Ready_data", input_file_root, output_file_name1)
-output_file_2 = os.path.join(script_dir, "Ready_data", input_file_root, output_file_name2)
-
-output_append_totpower = "_total_power"
-output_file_name3 = input_file_name1 + output_append_totpower + ".csv"
-output_file_name4 = input_file_name2 + output_append_totpower + ".csv"
-output_file_3 = os.path.join(script_dir, "Ready_data", input_file_root, output_file_name3)
-output_file_4 = os.path.join(script_dir, "Ready_data", input_file_root, output_file_name4)
-
-
-############################################################################
-#                             Create Folder                                #
-############################################################################
-
-# Check for file path and create if does not exist
-if not os.path.exists(folder_path):
-    os.makedirs(folder_path) # os.mkdir() creates only one level; os.makedirs() creates intermediate parents
-    # print(f"Directory created: {folder_path}")
-# else:
-    # print(f"Directory already exists: {folder_path}")
 
 ############################################################################
 #                             Program Start                                #
@@ -103,7 +72,24 @@ def process_data(input_file, output_file, wanted_col):
     # write data to csv
     df_pivot.to_csv(output_file, index=True)
 
-process_data(input_file_1, output_file_1, 'Water Heating Electric Power (kW)')
-process_data(input_file_2, output_file_2, 'Water Heating Electric Power (kW)')
-process_data(input_file_1, output_file_3, 'Total Electric Power (kW)')
-process_data(input_file_2, output_file_4, 'Total Electric Power (kW)')
+def main(run_id):
+    input_file_1 = os.path.join(script_dir, f"{run_id}_baseline.csv")
+    input_file_2 = os.path.join(script_dir, f"{run_id}_controlled.csv")
+    folder_path = os.path.join(script_dir, "Ready_data", run_id)
+    os.makedirs(folder_path, exist_ok=True)
+
+    output_file_1 = os.path.join(folder_path, f"{run_id}_baseline_WH_power.csv")
+    output_file_2 = os.path.join(folder_path, f"{run_id}_controlled_WH_power.csv")
+    output_file_3 = os.path.join(folder_path, f"{run_id}_baseline_total_power.csv")
+    output_file_4 = os.path.join(folder_path, f"{run_id}_controlled_total_power.csv")
+
+    process_data(input_file_1, output_file_1, 'Water Heating Electric Power (kW)')
+    process_data(input_file_2, output_file_2, 'Water Heating Electric Power (kW)')
+    process_data(input_file_1, output_file_3, 'Total Electric Power (kW)')
+    process_data(input_file_2, output_file_4, 'Total Electric Power (kW)')
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run-id", required=True)
+    main(parser.parse_args().run_id)

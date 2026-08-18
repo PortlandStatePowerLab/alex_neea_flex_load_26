@@ -1,26 +1,3 @@
-"""
-def pjm_delay_and_correlation(target, actual, timestep_minutes):
-    candidates = []
-
-    for delay_minutes in allowed_delays_0_to_5:
-        delay_steps = round(delay_minutes / timestep_minutes)
-
-        # Positive delay: response at t is evaluated against command at t-delay.
-        aligned_target = target.shift(delay_steps)
-        pair = concat(aligned_target, actual).dropna()
-
-        correlation = pair["target"].corr(pair["actual"])
-        delay_score = abs((delay_minutes - 5.0) / 5.0)
-
-        candidates.append({
-            "delay_minutes": delay_minutes,
-            "correlation_score": correlation,
-            "delay_score": delay_score,
-            "selection_score": correlation + delay_score,
-        })
-
-    return candidate_with_highest_selection_score
-"""
 
 import os
 import numpy as np
@@ -28,14 +5,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import datetime as dt
+import argparse
 
 
 # ---------------------------------------------------------------------------
 # USER SETTINGS
 # ---------------------------------------------------------------------------
-
-# Must match ``filename`` in HPWH_B2_EnergySched_LoadShaping.py.
-INPUT_FILE_ROOT = "2025_All_630_1_45_1700_1_45_OS"
 
 # Set True to display plots after saving them.
 SHOW_PLOTS = True
@@ -49,54 +24,28 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 project_dir = os.path.dirname(script_dir)
 working_dir = os.path.dirname(project_dir)
 
-ready_data_dir = os.path.join(project_dir, "Ready_data", INPUT_FILE_ROOT)
-
-vpp_log_file = os.path.join(
-    project_dir,
-    f"{INPUT_FILE_ROOT}_VPP_Fleet_States.csv",
-)
-
-# B2 writes its VPP log to RESULTS_DIR, which is its script directory in the
-# existing HPWH pipeline. Retain the older locations as fallbacks.
-vpp_log_candidates = [
-    os.path.join(script_dir, f"{INPUT_FILE_ROOT}_VPP_Fleet_States.csv"),
-    vpp_log_file,
-    os.path.join(working_dir, f"{INPUT_FILE_ROOT}_VPP_Fleet_States.csv"),
-]
-
-baseline_file = os.path.join(
-    ready_data_dir, f"{INPUT_FILE_ROOT}_baseline_WH_power.csv"
-)
-controlled_file = os.path.join(
-    ready_data_dir, f"{INPUT_FILE_ROOT}_controlled_WH_power.csv"
-)
-
-plot_response_file = os.path.join(
-    ready_data_dir, f"{INPUT_FILE_ROOT}_C4_response_diagnostic.png"
-)
-plot_lag_file = os.path.join(
-    ready_data_dir, f"{INPUT_FILE_ROOT}_C4_correlation_vs_lag.png"
-)
-
-
 # ---------------------------------------------------------------------------
 # HELPERS
 # ---------------------------------------------------------------------------
 
-def find_vpp_log():
+def find_vpp_log(run_id):
     """Return the first existing B2 VPP log path."""
+    # B2 writes to its script directory. Older locations remain fallbacks for
+    # existing result sets created before the Excel pipeline was consolidated.
+    vpp_log_candidates = [
+        os.path.join(script_dir, f"{run_id}_VPP_Fleet_States.csv"),
+        os.path.join(project_dir, f"{run_id}_VPP_Fleet_States.csv"),
+        os.path.join(working_dir, f"{run_id}_VPP_Fleet_States.csv"),
+    ]
     for path in vpp_log_candidates:
         if os.path.isfile(path):
             return path
-    return None
+    searched = "\n  ".join(vpp_log_candidates)
+    raise FileNotFoundError(f"Could not find the VPP state log. Searched:\n  {searched}")
 
 
 def load_vpp_data(path):
     """Load and prepare the B2 VPP state log."""
-    if path is None:
-        searched = "\n  ".join(vpp_log_candidates)
-        raise FileNotFoundError(f"B2 VPP log was not found. Searched:\n  {searched}")
-
     df = pd.read_csv(path)
 
     required = {
@@ -240,8 +189,8 @@ def pjm_precision(target, actual, reg_cap_kw):
     return np.clip(raw_precision_score, 0.0, 1.0)
 
 
-def main():
-    vpp_path = find_vpp_log()
+def main(run_id):
+    vpp_path = find_vpp_log(run_id)
     df, t_res = load_vpp_data(vpp_path)
 
     if t_res > 5:
@@ -262,7 +211,10 @@ def main():
 
     precision = pjm_precision(df["Target Delta (kW)"], df["Actual HPWH Delta (kW)"], df["Regulation Capacity (kW)"])
 
+    print(precision)
     return ((avg_corr / 3) + (avg_delay / 3) + (precision / 3))
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run-id", required=True)
+    main(parser.parse_args().run_id)

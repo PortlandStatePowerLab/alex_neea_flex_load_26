@@ -133,7 +133,7 @@ sys.stderr = OCHREOutputFilter(sys.stderr)
 # USER SETTINGS
 #########################################
 #Gallons, MLU, MLU duration, Shed duration, ELU, ELU duration, Shed duration, Offset sheds 
-filename = '2025_All_630_1_45_1700_1_45_OS'
+filename = 'hpwh_test_8_18_2026'
 
 #"HPWH 50 Input Files", "HPWH 66 Input Files/bldg", "HPWH 80 Input Files", "HPWH All Input Files/bldg"
 Input_folder = "HPWH All Portland Input Files"
@@ -176,7 +176,7 @@ Start = dt.datetime(2018, 1, 11, 0, 0)
 Duration = 2  # days
 t_res = 1.0  # minutes
 
-# NUM_HOMES = 10
+NUM_HOMES = 10
 
 # The regulation signal is normalized to [-1, 1].  It is converted to a kW
 # request using REGULATION_CAPACITY_KW:
@@ -338,12 +338,12 @@ def signal_aggregator_mean(reg_signal=None):
         index=sim_times
     )
 
-    save_sig(working_sig, Start + pd.Timedelta(days=1))
+    save_sig(working_sig)
 
     return working_sig
 
 
-def save_sig(reg_sig, start_time):
+def save_sig(reg_sig):
 
     saved_sig = pd.DataFrame({
         "Timestamp": reg_sig.index,
@@ -594,7 +594,20 @@ def find_all_homes(base_dir):
 #     first_day_end = start_date + pd.Timedelta(days=1)
 #     return df[df['Time'] >= first_day_end].copy()
 
-def aggregate_results(homes, work_dir):
+def restore_time_column(df, result_name):
+    """Move OCHRE's datetime index into a regular Time column."""
+    if "Time" in df.columns:
+        return df
+
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError(
+            f"{result_name} has no Time column and its index is not datetime."
+        )
+
+    return df.rename_axis("Time").reset_index()
+
+
+def aggregate_results(homes, work_dir, run_id):
     all_ctrl, all_base = [], []
     for home in homes:
         results_dir = os.path.join(home, "Results")
@@ -613,11 +626,11 @@ def aggregate_results(homes, work_dir):
 
     if all_ctrl:
         df_ctrl_all = pd.concat(all_ctrl, ignore_index=True)
-        df_ctrl_all.to_csv(os.path.join(work_dir, filename + "_controlled.csv"), index=False)
+        df_ctrl_all.to_csv(os.path.join(work_dir, run_id + "_controlled.csv"), index=False)
 
     if all_base:
         df_base_all = pd.concat(all_base, ignore_index=True)
-        df_base_all.to_csv(os.path.join(work_dir, filename + "_baseline.csv"), index=False)
+        df_base_all.to_csv(os.path.join(work_dir, run_id + "_baseline.csv"), index=False)
     print(f"Aggregated CSVs written!")
 
 #########################################
@@ -763,10 +776,12 @@ def update_home_worker(home_data):
 # MAIN EXECUTION
 #########################################
 
-def main(parameters=None):
+def main(parameters=None, run_id=None):
     """Run the HPWH B2 fleet simulation using calculator parameters."""
 
     global REG_SIGNAL
+
+    effective_run_id = run_id or filename
 
     # ============================================================
     # 0. Configuration
@@ -795,7 +810,7 @@ def main(parameters=None):
         )
 
     homes = find_all_homes(INPUT_DIR)
-    # homes = homes[:NUM_HOMES]
+    homes = homes[:NUM_HOMES]
 
     if not homes:
         raise RuntimeError(
@@ -1271,6 +1286,16 @@ def main(parameters=None):
                 home_data["sim"].finalize()
             )
 
+            df_base = restore_time_column(
+                df_base,
+                f"{building_name} baseline"
+            )
+
+            df_ctrl = restore_time_column(
+                df_ctrl,
+                f"{building_name} controlled"
+            )
+
             # df_base = remove_first_day(
             #     df_base,
             #     Start
@@ -1362,7 +1387,8 @@ def main(parameters=None):
 
     aggregate_results(
         successful_finalizations,
-        RESULTS_DIR
+        RESULTS_DIR,
+        effective_run_id
     )
 
     # ============================================================
@@ -1375,7 +1401,7 @@ def main(parameters=None):
 
     vpp_log_path = os.path.join(
         RESULTS_DIR,
-        filename + "_VPP_Fleet_States.csv"
+        effective_run_id + "_VPP_Fleet_States.csv"
     )
 
     df_vpp_log.to_csv(
@@ -1396,6 +1422,7 @@ def main(parameters=None):
         "configuration": configuration,
         "homes_simulated": len(successful_finalizations),
         "homes_failed": failed_count,
+        "run_id": effective_run_id,
         "vpp_log_path": vpp_log_path,
     }
 

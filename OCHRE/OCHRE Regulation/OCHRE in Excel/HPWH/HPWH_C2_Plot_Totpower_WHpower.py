@@ -7,6 +7,8 @@
 """
 
 
+import argparse
+
 import pandas as pd
 import os
 import matplotlib.pyplot as plt
@@ -22,29 +24,6 @@ warnings.filterwarnings("ignore")
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_dir = os.path.dirname(script_dir)
 # working_dir = os.path.dirname(project_dir)  
-
-input_file_root = "2025_All_630_1_45_1700_1_45_OS"
-
-input_file_name1 = input_file_root + "_baseline"
-input_file_name2 = input_file_root + "_controlled"
-input_file_1  = os.path.join(script_dir, input_file_name1 +".csv")
-input_file_2  = os.path.join(script_dir, input_file_name2 +".csv")
-
-output_append_WHpower = "_WH_power"
-output_file_name1 = input_file_name1 + output_append_WHpower + ".csv"
-output_file_name2 = input_file_name2 + output_append_WHpower + ".csv"
-folder_path = os.path.join(script_dir, "Ready_data", input_file_root)
-output_file_1 = os.path.join(script_dir, "Ready_data", input_file_root,output_file_name1)
-output_file_2 = os.path.join(script_dir, "Ready_data", input_file_root, output_file_name2)
-
-output_append_totpower = "_total_power"
-output_file_name3 = input_file_name1 + output_append_totpower + ".csv"
-output_file_name4 = input_file_name2 + output_append_totpower + ".csv"
-output_file_3 = os.path.join(script_dir, "Ready_data", input_file_root, output_file_name3)
-output_file_4 = os.path.join(script_dir, "Ready_data", input_file_root, output_file_name4)
-
-photo_file_1 = os.path.join(script_dir, "Ready_data", input_file_root, input_file_root + "_WH_power_plot.png")
-photo_file_2 = os.path.join(script_dir, "Ready_data", input_file_root, input_file_root + "_Total_power_plot.png")
 
 reg_sig_file = os.path.join(project_dir, "Reg Sig", "rega_filtered.csv")
 
@@ -132,61 +111,76 @@ def plot_data(baseline_file, controlled_file, title, photo_file, ax):
     # print("RegA:", len(df_reg_sig))
     
     #plot
-    # fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(8, 5))
     
-    # ax.plot(df_base['Time'],
-    #         df_base['baseline'],
-    #         label='baseline',
-    #         color='blue')
+    ax.plot(df_base['Time'],
+            df_base['baseline'],
+            label='baseline',
+            color='blue')
     
-    # ax.plot(df_con['Time'],
-    #         df_con['controlled'],
-    #         label='controlled',
-    #         color='orange',
-    #         linestyle='--')
+    ax.plot(df_con['Time'],
+            df_con['controlled'],
+            label='controlled',
+            color='orange',
+            linestyle='--')
     
-    # ax2 = ax.twinx()
+    ax2 = ax.twinx()
     
-    # ax2.plot(df_reg_sig['Time'],
-    #         df_reg_sig['signal'],
-    #         label='regulation signal',
-    #         color='mediumorchid',
-    #         linestyle=':')
-    # # Customize and display
-    # ax.set_title(title)
-    # ax.set_xlabel('Time')
-    # ax.set_ylabel('Power (kW)')
-    # # ax.legend() # Displays labels properly
-    # # ax.set_xlim(0, 24)
-    # # ax.set_xticks([0,6,12,18,24])
-    # ax2.set_ylabel("Normalized Regulation Signal")
-    # ax2.set_ylim(-1.1, 1.1)
+    ax2.plot(df_reg_sig['Time'],
+            df_reg_sig['signal'],
+            label='regulation signal',
+            color='mediumorchid',
+            linestyle=':')
+    # Customize and display
+    ax.set_title(title)
+    ax.set_xlabel('Time')
+    ax.set_ylabel('Power (kW)')
+    # ax.legend() # Displays labels properly
+    # ax.set_xlim(0, 24)
+    # ax.set_xticks([0,6,12,18,24])
+    ax2.set_ylabel("Normalized Regulation Signal")
+    ax2.set_ylim(-1.1, 1.1)
     
-    # lines1, labels1 = ax.get_legend_handles_labels()
-    # lines2, labels2 = ax2.get_legend_handles_labels()
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
     
-    # ax.legend(
-    #     lines1 + lines2,
-    #     labels1 + labels2,
-    #     loc="upper right"
-    # )
+    ax.legend(
+        lines1 + lines2,
+        labels1 + labels2,
+        loc="upper right"
+    )
     
     
-    # ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-    # ax.xaxis.set_major_locator(mdates.HourLocator(interval=4))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+    ax.xaxis.set_major_locator(mdates.HourLocator(interval=4))
     
-    # fig.autofmt_xdate()
+    fig.autofmt_xdate()
     
-    # plt.savefig(photo_file, dpi=300, bbox_inches='tight')
+    plt.savefig(photo_file, dpi=300, bbox_inches='tight')
 
-save_avg(output_file_1)
-save_avg(output_file_2)
-plot_data(output_file_1, output_file_2, 'Average Power Consumption per Water Heater', photo_file_1, "ax1")
+def main(run_id):
+    folder_path = os.path.join(script_dir, "Ready_data", run_id)
+    output_file_1 = os.path.join(folder_path, f"{run_id}_baseline_WH_power.csv")
+    output_file_2 = os.path.join(folder_path, f"{run_id}_controlled_WH_power.csv")
+    output_file_3 = os.path.join(folder_path, f"{run_id}_baseline_total_power.csv")
+    output_file_4 = os.path.join(folder_path, f"{run_id}_controlled_total_power.csv")
+    photo_file_1 = os.path.join(folder_path, f"{run_id}_WH_power_plot.png")
+    photo_file_2 = os.path.join(folder_path, f"{run_id}_Total_power_plot.png")
 
-save_avg(output_file_3)
-save_avg(output_file_4)
-plot_data(output_file_3, output_file_4, 'Average Total Power Consumption per Household', photo_file_2, "ax2")
+    save_avg(output_file_1)
+    save_avg(output_file_2)
+    plot_data(output_file_1, output_file_2, 'Average Power Consumption per Water Heater', photo_file_1, "ax1")
 
-#Show plot at the end so it doesn't overwrite the previous plot
-# plt.show()
+    save_avg(output_file_3)
+    save_avg(output_file_4)
+    plot_data(output_file_3, output_file_4, 'Average Total Power Consumption per Household', photo_file_2, "ax2")
+
+    # Show plots after both have been saved.
+    # plt.show()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run-id", required=True)
+    main(parser.parse_args().run_id)
 

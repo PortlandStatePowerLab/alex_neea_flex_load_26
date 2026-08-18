@@ -1,162 +1,112 @@
-"""Plot the HPWH fleet's controlled-minus-baseline power response.
+"""Plot requested and actual HPWH regulation response on one normalized axis.
 
-Run HPWH_C1_parse_OCHRE_data_final.py first. C3 uses C1's water-heating
-power CSVs; it also accepts the same files after C2 has appended its average
-row. The resulting plot is saved beside the C1/C2 outputs.
+Run HPWH_B2_EnergySched_LoadShaping.py first. C3 reads B2's fleet-state
+log and divides the actual controlled-minus-baseline fleet power by the
+recorded static regulation capacity. Thus, for example, 15 kW of response
+against 20 kW of capacity is plotted as 0.75.
 """
 
+import argparse
 import os
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
 
-import warnings
-
-warnings.filterwarnings("ignore")
-
-
-# Must match ``filename`` in HPWH_B2_EnergySched_LoadShaping.py.
-INPUT_FILE_ROOT = "2025_All_630_1_45_1700_1_45_OS"
-PLOT_POINTS = 1000
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-project_dir = os.path.dirname(script_dir)
-# working_dir = os.path.dirname(project_dir)
-ready_data_dir = os.path.join(script_dir, "Ready_data", INPUT_FILE_ROOT)
-
-baseline_file = os.path.join(
-    ready_data_dir, f"{INPUT_FILE_ROOT}_baseline_WH_power.csv"
-)
-controlled_file = os.path.join(
-    ready_data_dir, f"{INPUT_FILE_ROOT}_controlled_WH_power.csv"
-)
-reg_sig_file = os.path.join(project_dir, "Reg Sig", "rega_filtered.csv")
-plot_file = os.path.join(
-    ready_data_dir, f"{INPUT_FILE_ROOT}_normalized_power_plot.png"
-)
+PLOT_POINTS = 2000
 
 
-def average_power_by_time(csv_file, column_name):
-    """Return mean HPWH power by clock time from a C1/C2 output CSV."""
-    data = pd.read_csv(csv_file, index_col=0)
-    numeric_data = data.apply(pd.to_numeric, errors="coerce")
-
-    # C2 appends its per-column average as a final row with an empty Home
-    # value. Reuse that row when present so C3 exactly matches C2's average.
-    if data.index.isna().any():
-        average = numeric_data.loc[data.index.isna()].iloc[-1]
-    else:
-        average = numeric_data.mean(axis=0)
-
-    result = average.rename(column_name).rename_axis("Time").reset_index()
-    result["Time"] = pd.to_datetime(result["Time"], format="%H:%M", errors="coerce")
-    result = result.dropna(subset=["Time", column_name])
-    if result.empty:
+def load_normalized_response(vpp_log_file):
+    """Load aligned regulation request and capacity-normalized fleet response."""
+    data = pd.read_csv(vpp_log_file, parse_dates=["Time"])
+    required_columns = {
+        "Time",
+        "Regulation Signal",
+        "Regulation Capacity (kW)",
+        "Actual HPWH Delta (kW)",
+    }
+    missing_columns = required_columns - set(data.columns)
+    if missing_columns:
         raise ValueError(
-            f"No usable HH:MM power columns were found in: {csv_file}"
-        )
-    return result
-
-
-def load_regulation_signal():
-    """Load the first one-day signal segment, matching C2's plot."""
-    signal = pd.read_csv(reg_sig_file, parse_dates=["Timestamp"])
-    required_columns = {"Timestamp", "Signal"}
-    if not required_columns.issubset(signal.columns):
-        raise ValueError(
-            f"{reg_sig_file} must contain Timestamp and Signal columns."
+            f"{vpp_log_file} is missing required columns: "
+            + ", ".join(sorted(missing_columns))
         )
 
-    signal = signal.rename(columns={"Timestamp": "Time", "Signal": "signal"})
-    signal = signal.dropna(subset=["Time", "signal"])
-    if signal.empty:
-        raise ValueError(f"No usable regulation-signal rows were found in: {reg_sig_file}")
-
-    signal_date = signal["Time"].dt.normalize().iloc[0]
-    return signal[signal["Time"].dt.normalize() == signal_date][["Time", "signal"]].copy()
-
-
-def calculate_correlation(power, signal):
-    """Print and return the response-to-signal correlation for plotted points."""
-    merged = power.merge(signal, on="Time", how="inner")
-    if len(merged) < 2:
-        print("Correlation unavailable: fewer than two aligned power/signal points.")
-        return float("nan")
-
-    correlation = merged["controlled_minus_baseline"].corr(merged["signal"])
-    # print(
-    #     "Correlation between controlled-baseline power and regulation signal: "
-    #     f"{correlation:.4f}"
-    # )
-    print("Correlation calculated successfully.")
-    return correlation
-
-
-def main():
-    missing_files = [
-        file for file in (baseline_file, controlled_file, reg_sig_file)
-        if not os.path.isfile(file)
+    numeric_columns = [
+        "Regulation Signal",
+        "Regulation Capacity (kW)",
+        "Actual HPWH Delta (kW)",
     ]
-    if missing_files:
-        raise FileNotFoundError(
-            "C3 cannot plot because these required files are missing:\n- "
-            + "\n- ".join(missing_files)
-            + "\nRun HPWH_C1 with the same INPUT_FILE_ROOT, then run C3."
-        )
+    data[numeric_columns] = data[numeric_columns].apply(
+        pd.to_numeric, errors="coerce"
+    )
+    data = data.dropna(subset=["Time", *numeric_columns]).copy()
+    if data.empty:
+        raise ValueError(f"No usable fleet-response rows were found in: {vpp_log_file}")
+    if (data["Regulation Capacity (kW)"] <= 0).any():
+        raise ValueError("Regulation Capacity (kW) must be greater than zero.")
 
-    baseline = average_power_by_time(baseline_file, "baseline_kw")
-    controlled = average_power_by_time(controlled_file, "controlled_kw")
-    power = baseline.merge(controlled, on="Time", how="inner")
-    if power.empty:
-        raise ValueError("Baseline and controlled HPWH files have no matching clock times.")
-    power["controlled_minus_baseline"] = (
-        power["controlled_kw"] - power["baseline_kw"]
+    data["normalized_actual_response"] = (
+        data["Actual HPWH Delta (kW)"] / data["Regulation Capacity (kW)"]
+    )
+    return data.sort_values("Time")
+
+
+def main(run_id):
+    ready_data_dir = os.path.join(script_dir, "Ready_data", run_id)
+    vpp_log_file = os.path.join(script_dir, f"{run_id}_VPP_Fleet_States.csv")
+    plot_file = os.path.join(
+        ready_data_dir, f"{run_id}_normalized_power_plot.png"
     )
 
-    signal = load_regulation_signal()
-
-    # C1 uses clock-time columns, while the signal has complete timestamps.
-    # Put both on an arbitrary common day before plotting and correlating.
-    for frame in (power, signal):
-        frame["Time"] = pd.to_datetime(
-            frame["Time"].dt.strftime("1900-01-01 %H:%M:%S")
+    if not os.path.isfile(vpp_log_file):
+        raise FileNotFoundError(
+            f"Missing C3 input file: {vpp_log_file}\n"
+            "Run HPWH_B2 with the same run ID before C3."
         )
 
-    # fig, ax = plt.subplots(figsize=(8, 5))
-    # ax.plot(
-    #     power["Time"].tail(PLOT_POINTS),
-    #     power["controlled_minus_baseline"].tail(PLOT_POINTS),
-    #     label="controlled - baseline HPWH power",
-    #     color="green",
-    # )
-    # ax.axhline(0.0, color="black", linewidth=1, alpha=0.6)
-    # ax.set_title("Average Water-Heating Power Response per Household")
-    # ax.set_xlabel("Time")
-    # ax.set_ylabel("Controlled - Baseline Power (kW)")
+    response = load_normalized_response(vpp_log_file).tail(PLOT_POINTS)
+    os.makedirs(ready_data_dir, exist_ok=True)
 
-    # ax2 = ax.twinx()
-    # ax2.plot(
-    #     signal["Time"].tail(PLOT_POINTS),
-    #     signal["signal"].tail(PLOT_POINTS),
-    #     label="regulation signal",
-    #     color="mediumorchid",
-    #     linestyle=":",
-    # )
-    # ax2.set_ylabel("Normalized Regulation Signal")
-    # ax2.set_ylim(-1.1, 1.1)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(
+        response["Time"],
+        response["normalized_actual_response"],
+        label="(controlled - baseline) / regulation capacity",
+        color="green",
+    )
+    ax.plot(
+        response["Time"],
+        response["Regulation Signal"],
+        label="regulation signal",
+        color="mediumorchid",
+        linestyle=":",
+    )
+    ax.axhline(0.0, color="black", linewidth=1, alpha=0.6)
 
-    # lines1, labels1 = ax.get_legend_handles_labels()
-    # lines2, labels2 = ax2.get_legend_handles_labels()
-    # ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
-    # ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-    # ax.xaxis.set_major_locator(mdates.HourLocator(interval=4))
-    # fig.autofmt_xdate()
-    # fig.savefig(plot_file, dpi=300, bbox_inches="tight")
+    # Use one shared, symmetric axis so zero is exactly in the graph's middle.
+    plotted_limit = max(
+        1.0,
+        response["normalized_actual_response"].abs().max(),
+        response["Regulation Signal"].abs().max(),
+    )
+    y_limit = 1.1 * plotted_limit
+    ax.set_ylim(-y_limit, y_limit)
 
-    return calculate_correlation(power, signal)
-    # plt.show()
+    ax.set_title("Normalized HPWH Fleet Regulation Response")
+    ax.set_xlabel("Time")
+    ax.set_ylabel("Fraction of Static Regulation Capacity")
+    ax.legend(loc="upper right")
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    ax.xaxis.set_major_locator(mdates.HourLocator(interval=4))
+    fig.autofmt_xdate()
+    fig.savefig(plot_file, dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run-id", required=True)
+    main(parser.parse_args().run_id)
