@@ -1,3 +1,12 @@
+"""
+Author: Alex Wardwell
+Created: 8/10/26
+
+Expands a PJM test signal to be usable for a 2 day, 1 minute resolution OCHRE regulation simulation.
+
+@modified by: 
+@modified date: 
+"""
 
 import os
 import pandas as pd

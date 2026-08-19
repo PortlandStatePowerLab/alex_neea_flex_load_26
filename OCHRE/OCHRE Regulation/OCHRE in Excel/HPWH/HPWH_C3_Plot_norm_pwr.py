@@ -1,9 +1,15 @@
-"""Plot requested and actual HPWH regulation response on one normalized axis.
+"""
+Author: Alex Wardwell
+Created: 8/12/26
 
+Plot requested and actual HPWH regulation response on one normalized axis.
 Run HPWH_B2_EnergySched_LoadShaping.py first. C3 reads B2's fleet-state
 log and divides the actual controlled-minus-baseline fleet power by the
 recorded static regulation capacity. Thus, for example, 15 kW of response
 against 20 kW of capacity is plotted as 0.75.
+
+@modified by: 
+@modified date: 
 """
 
 import argparse

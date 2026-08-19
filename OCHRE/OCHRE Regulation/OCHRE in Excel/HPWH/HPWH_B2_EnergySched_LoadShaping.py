@@ -2,6 +2,9 @@
 Author: Thomas Metzler
 Created: 7/6/26
 Dispatches HPWH load and shed commands to track a normalized regulation signal.
+
+Modified by Alex Wardwell
+Modified on 8/19/26
 """
 
 import os
@@ -173,7 +176,7 @@ REG_ADDRESS = f"{REG_TYPE}-ochre.csv"
 
 # Simulation parameters
 Start = dt.datetime(2018, 1, 11, 0, 0)
-Duration = 2  # days
+Duration = 1  # days
 t_res = 1.0  # minutes
 
 # NUM_HOMES = 10

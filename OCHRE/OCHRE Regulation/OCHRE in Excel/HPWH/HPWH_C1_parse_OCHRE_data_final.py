@@ -7,6 +7,8 @@ Created on Wed Sep 24 14:46:47 2025
 @modified date: 12/14/2025
 @modified by: Thomas Metzler
 @modified date: 6/17/2026
+@modified by: Alex Wardwell
+@modified date: 8/119/2026
 """
 
 
@@ -14,7 +16,7 @@ import pandas as pd
 import csv
 import os
 import argparse
-import datetime
+from datetime import datetime
 
 # Converts the datetime information in the HEMS data to usable datetimes
 def convert_custom_datetime(series):
@@ -24,8 +26,6 @@ def convert_custom_datetime(series):
 ############################################################################
 #                           Enter inputs here                              #
 ############################################################################
-
-# enter in the input and output file names. 
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_dir = os.path.dirname(script_dir)
@@ -50,7 +50,6 @@ def process_data(input_file, output_file, wanted_col):
     #     print(f"- {col}")
     # convert time column to a usable datetime fomat
     df['time'] = pd.to_datetime(df['Time'], errors='coerce')
-    #df['time'] = convert_custom_datetime(df['Time'])
 
     # Create column that contains hour and minute data
     df['hr_min'] = df['time'].dt.strftime('%H:%M')

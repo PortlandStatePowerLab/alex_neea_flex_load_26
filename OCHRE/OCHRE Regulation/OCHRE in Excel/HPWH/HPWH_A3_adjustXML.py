@@ -4,6 +4,9 @@ Updated: 7/9/2026
 
 Adjusts HPWH properties in the XML file that OCHRE will read.
 Updated to dynamically convert ERWH, Natural Gas, and Tankless units to HPWH.
+
+Modified by Alex Wardwell
+Modified on 8/19/26
 """
 
 import shutil

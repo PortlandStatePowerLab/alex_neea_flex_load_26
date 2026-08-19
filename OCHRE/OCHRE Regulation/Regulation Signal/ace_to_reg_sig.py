@@ -1,5 +1,15 @@
-from pathlib import Path
+"""
+Author: Alex Wardwell
+Created: 8/18/26
 
+Modifies an ACE signal from ERCOT into a RegA and RegD signal.
+Based on PJM Manual 12, 2020
+
+@modified by: 
+@modified date: 
+"""
+
+from pathlib import Path
 import numpy as np
 import pandas as pd
 

@@ -1,3 +1,13 @@
+"""
+Author: Alex Wardwell
+Created: 8/10/26
+
+Runs OCHRE from Excel.
+
+@modified by: 
+@modified date: 
+"""
+
 import win32com.client
 import pandas as pd
 import subprocess
@@ -6,28 +16,51 @@ import sys
 from pathlib import Path
 import re
 from datetime import datetime
+import shutil
 
+# Find paths
+#   Directory of file
+#   Parent directory of file
 base_dir = Path(__file__).resolve().parent
 project_dir = base_dir.parent
 if str(project_dir) not in sys.path:
     sys.path.insert(0, str(project_dir))
 
+# Name of main calculator worksheet
+WS_NAME = "Calculator"
+
+# Set paths for files needed to run OCHRE
 OLD_BLDG_DIR = os.path.join(base_dir, "HPWH All Portland Input Files")
+B2_FILE = project_dir / "HPWH" / "HPWH_B2_EnergySched_LoadShaping.py"
+C1_PATH = project_dir / "HPWH" / "HPWH_C1_parse_OCHRE_data_final.py"
+C2_PATH = project_dir / "HPWH" / "HPWH_C2_Plot_Totpower_WHpower.py"
+C3_PATH = project_dir / "HPWH" / "HPWH_C3_Plot_norm_pwr.py"
+D1_PATH = project_dir / "HPWH" / "HPWH_D1_delete_prev_results.py"
 
+# Set cells to read/write
+# Makes changing cells easier if they're all in one place
+sample_cell = "K35"
+delete_results_cell = "N37"
+month_cell = "N34"
+week_day_end_cell = "N35"
+fl_type_cell = "I6"
+fl_name_cell = "I7"
+t_res_cell = "K38"
+fast_result_cell = "N29"
+slow_result_cell = "N30"
+fast_graph_cell = "R3"
+slow_graph_cell = "R25"
 
+# Start Excel
+excel = win32com.client.GetActiveObject("Excel.Application")
+wb = excel.ActiveWorkbook
+WS = wb.Worksheets(WS_NAME)
 
-# get type of fl
-# get parameters for fl
-# get parameters for ochre
-#   Population, adoption rate, start/stop time, timestep, dr participation?, % reachable?, path to reg sig or select rega or regd
-# send parameters to A3
-# run A3
-# run B2
-# run C1
-# run C2
-# run C3
-# send correlation from c3 to excel
+# Choose the run ID once. RegA/RegD suffixes keep the two result sets apart.
+RUN_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+# May need to be updated
+# Different types of flex loads have different "Initial Inputs"
 input_map = {
     "Heat Pump Water Heater": [
         "comp_pwr", "resist_pwr", "tank_vol", "max_water_temp",
@@ -61,12 +94,13 @@ input_map = {
     ]
 }
 
+# HELPER FUNCTIONS
 
+# DELETE t_res functions after debugging
 def set_t_res(value, file):
     """Update t_res in the B2 OCHRE script."""
 
     value = float(value)
-
     text = file.read_text()
 
     new_text, count = re.subn(
@@ -83,28 +117,6 @@ def set_t_res(value, file):
         )
 
     file.write_text(new_text)
-
-
-def set_reg_type(value, file):
-    """Update REG_TYPE in the B2 OCHRE script."""
-
-    text = file.read_text()
-
-    new_text, count = re.subn(
-        r'(^\s*REG_TYPE\s*=\s*)["\'].*?["\']',
-        lambda match: match.group(1) + repr(str(value)),
-        text,
-        count=1,
-        flags=re.MULTILINE
-    )
-
-    if count == 0:
-        raise ValueError(
-            f"Could not find a REG_TYPE assignment in:\n{file}"
-        )
-
-    file.write_text(new_text)
-
 
 def check_t_res(t_res, b2_file):
     updated_text = b2_file.read_text()
@@ -126,18 +138,41 @@ def check_t_res(t_res, b2_file):
             f"Excel value = {t_res}, B2 value = {updated_t_res}"
         )
 
-def check_reg_type(reg, b2_file):
+# Start of good helper functions
+def set_reg_type(value, file):
+    """Update REG_TYPE in the B2 OCHRE script."""
+
+    text = file.read_text()
+
+    new_text, count = re.subn(
+        r'(^\s*REG_TYPE\s*=\s*)["\'].*?["\']',
+        lambda match: match.group(1) + repr(str(value)),
+        text,
+        count=1,
+        flags=re.MULTILINE
+    )
+
+    if count == 0:
+        raise ValueError(
+            f"Could not find a REG_TYPE assignment in:\n{file}"
+        )
+
+    file.write_text(new_text)
+
+
+def check_reg_type(reg_type, b2_file):
+    # Check that the REG_TYPE parameter was updated in B2
     updated_text = b2_file.read_text()
 
     if not re.search(
-        rf'^\s*REG_TYPE\s*=\s*["\']{re.escape(str(reg))}["\']',
+        rf'^\s*REG_TYPE\s*=\s*["\']{re.escape(str(reg_type))}["\']',
         updated_text,
         flags=re.MULTILINE
     ):
         raise RuntimeError("REG_TYPE could not be verified in the B2 file.")
 
 
-def delete_old_graphs(worksheet):
+def delete_old_graphs():
     """Delete graphs inserted by this script, including legacy image names."""
 
     graph_names = (
@@ -147,69 +182,15 @@ def delete_old_graphs(worksheet):
 
     for graph_name in graph_names:
         try:
-            worksheet.Shapes.Item(graph_name).Delete()
+            WS.Shapes.Item(graph_name).Delete()
         except Exception:
             # Excel raises a COM error when a shape with this name is absent.
             pass
 
 
-def main():
-
-    b2_file = project_dir / "HPWH" / "HPWH_B2_EnergySched_LoadShaping.py"
-
-    excel = win32com.client.GetActiveObject("Excel.Application")
-    wb = excel.ActiveWorkbook
-
-    inputs = wb.Worksheets("Calculator")
-
-    if inputs.Range("N37").Value == "Yes":
-        subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_D1_delete_prev_results.py")], check=True)
-
-    delete_old_graphs(inputs)
-
-    # future use
-    month_load_amt = inputs.Range("M34").Value
-    sample = inputs.Range("K35")
-
-
-    FL_type = inputs.Range("I6").Value
-    if FL_type not in input_map:
-        raise ValueError(f"Unsupported flex load type: {FL_type}")
-
-    FL_name = inputs.Range("I7").Value
-
-    params = {
-        var: inputs.Range(f"K{i}").value
-        for i, var in enumerate(input_map[FL_type], start=9)
-    }
-
-
-    t_res = inputs.Range("K38").Value
-
-    set_t_res(t_res, b2_file)
-    check_t_res(t_res, b2_file)
-
-    set_reg_type("RegA", b2_file)
-    check_reg_type("RegA", b2_file)
-
-    # Choose the run ID once. RegA/RegD suffixes keep the two result sets apart.
-    base_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    from HPWH import HPWH_B2_EnergySched_LoadShaping as run_ochre
-    from HPWH import HPWH_A3_adjustXML as adj_xml
-    adj_xml.main(params)
-    run_id = f"{base_run_id}_Slow"
-    run_ochre.main(params, run_id=run_id)
-    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C1_parse_OCHRE_data_final.py"), "--run-id", run_id], check=True)
-    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C2_Plot_Totpower_WHpower.py"), "--run-id", run_id], check=True)
-    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C3_Plot_norm_pwr.py"), "--run-id", run_id], check=True)
-    # from HPWH import HPWH_C3_Plot_norm_pwr as get_reg
-    # reg_corr = get_reg.main()
-    from HPWH import HPWH_C4_pjm_performance as pjm_scores
-    pjm_score = pjm_scores.main(run_id)
-
-    inputs.Range("N30").Value = pjm_score
-
+def print_graph(cell, reg_type):
+    # Put the graph from C3 in Excel
+    run_id = f"{RUN_ID}_{reg_type}"
     image_path = (
             project_dir
             / "HPWH"
@@ -217,13 +198,13 @@ def main():
             / run_id
             / f"{run_id}_normalized_power_plot.png"
         )
-
+    
     if not image_path.is_file():
         raise FileNotFoundError(f"Plot image was not created: {image_path}")
-
-    anchor = inputs.Range("R25")
-
-    picture = inputs.Shapes.AddPicture(
+    
+    anchor = WS.Range(cell)
+    
+    picture = WS.Shapes.AddPicture(
         str(image_path.resolve()),
         False,  # LinkToFile
         True,   # SaveWithDocument
@@ -232,57 +213,69 @@ def main():
         -1,     # Preserve original width
         -1      # Preserve original height
     )
-    picture.Name = "HPWH Slow Regulation Graph"
-
+    picture.Name = f"HPWH {reg_type} Regulation Graph"
+    
     # Optional resizing:
     picture.LockAspectRatio = True
     picture.Width = 600
 
 
-    set_reg_type("RegD", b2_file)
-    check_reg_type("RegD", b2_file)
-
+def run_files(params, reg_type):
+    # Run the different files needed to run OCHRE
     from HPWH import HPWH_B2_EnergySched_LoadShaping as run_ochre
-    run_id = f"{base_run_id}_Fast"
+    run_id = f"{RUN_ID}_{reg_type}"
     run_ochre.main(params, run_id=run_id)
-    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C1_parse_OCHRE_data_final.py"), "--run-id", run_id], check=True)
-    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C2_Plot_Totpower_WHpower.py"), "--run-id", run_id], check=True)
-    subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C3_Plot_norm_pwr.py"), "--run-id", run_id], check=True)
+    subprocess.run([sys.executable, str(C1_PATH), "--run-id", run_id], check=True)
+    subprocess.run([sys.executable, str(C2_PATH), "--run-id", run_id], check=True)
+    subprocess.run([sys.executable, str(C3_PATH), "--run-id", run_id], check=True)
     from HPWH import HPWH_C4_pjm_performance as pjm_scores
-    # reg_corr = get_reg.main()
-    pjm_score = pjm_scores.main(run_id)
-
-    inputs.Range("N29").Value = pjm_score
+    return pjm_scores.main(run_id)
 
 
-    image_path = (
-        project_dir
-        / "HPWH"
-        / "Ready_data"
-        / run_id
-        / f"{run_id}_normalized_power_plot.png"
-    )
+def set_run_ochre(params, reg_type, result_cell, graph_cell):
+    # Setup and run OCHRE
+    set_reg_type(reg_type, B2_FILE)
+    check_reg_type(reg_type, B2_FILE)
+    WS.Range(result_cell).Value = run_files(params, reg_type)
+    print_graph(graph_cell, reg_type)
 
-    if not image_path.is_file():
-        raise FileNotFoundError(f"Plot image was not created: {image_path}")
 
-    anchor = inputs.Range("R3")
+def main():
+    # Cleanup
+    if WS.Range(delete_results_cell).Value == "Yes":
+        subprocess.run([sys.executable, str(D1_PATH)], check=True)
 
-    picture = inputs.Shapes.AddPicture(
-        str(image_path.resolve()),
-        False,  # LinkToFile
-        True,   # SaveWithDocument
-        anchor.Left,
-        anchor.Top,
-        -1,     # Preserve original width
-        -1      # Preserve original height
-    )
-    picture.Name = "HPWH Fast Regulation Graph"
+    delete_old_graphs()
 
-    # Optional resizing:
-    picture.LockAspectRatio = True
-    picture.Width = 600
+    # future use variables
+    month = WS.Range(month_cell).Value
+    week_day_end = WS.Range(week_day_end_cell).Value
+    sample = WS.Range(sample_cell)
+    FL_name = WS.Range(fl_name_cell).Value
 
+    # Get type of flex load
+    FL_type = WS.Range(fl_type_cell).Value
+    if FL_type not in input_map:
+        raise ValueError(f"Unsupported flex load type: {FL_type}")
+    # Get parameters of flex load
+    params = {
+        var: WS.Range(f"K{i}").value
+        for i, var in enumerate(input_map[FL_type], start=9)
+    }
+
+    # Update t_res - REMOVE (debugging)
+    t_res = WS.Range(t_res_cell).Value
+    set_t_res(t_res, B2_FILE)
+    check_t_res(t_res, B2_FILE)
+
+    # Update XML of flex load with calculator parameterss
+    from HPWH import HPWH_A3_adjustXML as adj_xml
+    adj_xml.main(params)
+    # Run OCHRE
+    set_run_ochre(params, "RegA", slow_result_cell, slow_graph_cell)
+    set_run_ochre(params, "RegD", fast_result_cell, fast_graph_cell)
+
+    # Cleanup
     if os.path.isdir(OLD_BLDG_DIR):
         shutil.rmtree(OLD_BLDG_DIR)
 

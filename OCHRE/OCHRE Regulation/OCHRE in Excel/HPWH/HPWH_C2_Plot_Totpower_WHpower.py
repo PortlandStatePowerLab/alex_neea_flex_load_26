@@ -4,6 +4,9 @@
 
 #Creates plots for the average water heater and total household power consumption, comparing baseline and controlled
 #Works for HPWH 
+
+Modified by Alex Wardwell
+Modified on 8/19/26
 """
 
 

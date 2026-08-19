@@ -1,3 +1,13 @@
+"""
+Author: Alex Wardwell
+Created: 8/17/26
+
+Calculates performance score describing how well a flex load can follow a regulation signal.
+Based on PJM manual 12, 2020
+
+@modified by: 
+@modified date: 
+"""
 
 import os
 import numpy as np
@@ -13,7 +23,7 @@ import argparse
 # ---------------------------------------------------------------------------
 
 # Set True to display plots after saving them.
-SHOW_PLOTS = True
+SHOW_PLOTS = False
 
 
 # ---------------------------------------------------------------------------
