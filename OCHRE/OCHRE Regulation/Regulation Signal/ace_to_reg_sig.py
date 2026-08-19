@@ -17,6 +17,8 @@ TAU_REGA = 100.0
 TAU_NEUTRAL = 120.0
 TAU_REGD = 1.0
 
+FREQ_NORM = 0.1
+
 
 def load_ace(path):
     """Load the headerless time/frequency file and determine its cadence."""
@@ -78,10 +80,10 @@ def average_normalize_and_repeat(signal, sample_seconds, t_res):
         raise ValueError("The input is shorter than one output interval.")
 
     averaged = np.asarray(signal[:complete_samples]).reshape(-1, samples_per_bin).mean(axis=1)
-    scale = np.max(np.abs(averaged))
-    if scale > 0:
-        averaged = averaged / scale
-
+    # scale = np.max(np.abs(averaged))
+    # if scale > 0:
+    #     averaged = averaged / scale
+    averaged = averaged / FREQ_NORM
     target_periods = TARGET_MINUTES // t_res
     repeats = int(np.ceil(target_periods / len(averaged)))
     return np.tile(averaged, repeats)[:target_periods]

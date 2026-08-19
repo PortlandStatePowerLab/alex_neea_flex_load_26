@@ -51,6 +51,7 @@ def load_normalized_response(vpp_log_file):
     data["normalized_actual_response"] = (
         data["Actual HPWH Delta (kW)"] / data["Regulation Capacity (kW)"]
     )
+    print(data["normalized_actual_response"])
     return data.sort_values("Time")
 
 

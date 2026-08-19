@@ -208,7 +208,7 @@ def main():
     from HPWH import HPWH_C4_pjm_performance as pjm_scores
     pjm_score = pjm_scores.main(run_id)
 
-    inputs.Range("N30").Value = pjm_score * 100
+    inputs.Range("N30").Value = pjm_score
 
     image_path = (
             project_dir
@@ -252,7 +252,7 @@ def main():
     # reg_corr = get_reg.main()
     pjm_score = pjm_scores.main(run_id)
 
-    inputs.Range("N29").Value = pjm_score * 100
+    inputs.Range("N29").Value = pjm_score
 
 
     image_path = (

@@ -176,7 +176,7 @@ Start = dt.datetime(2018, 1, 11, 0, 0)
 Duration = 2  # days
 t_res = 1.0  # minutes
 
-NUM_HOMES = 10
+# NUM_HOMES = 10
 
 # The regulation signal is normalized to [-1, 1].  It is converted to a kW
 # request using REGULATION_CAPACITY_KW:
@@ -186,7 +186,7 @@ NUM_HOMES = 10
 #
 # Set this no higher than the reliably available HPWH flexibility in the fleet.
 # The controller logs availability so this value can be calibrated after a run.
-REGULATION_CAPACITY_KW = 200.0
+REGULATION_CAPACITY_KW = 20.0
 
 # Dispatch and comfort settings.  With a one-minute timestep, five minutes is
 # a conservative initial minimum command duration.  A home is always released
@@ -810,7 +810,7 @@ def main(parameters=None, run_id=None):
         )
 
     homes = find_all_homes(INPUT_DIR)
-    homes = homes[:NUM_HOMES]
+    # homes = homes[:NUM_HOMES]
 
     if not homes:
         raise RuntimeError(
