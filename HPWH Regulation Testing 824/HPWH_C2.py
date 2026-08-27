@@ -164,7 +164,6 @@ def plot_data(baseline_file, controlled_file, title, photo_file, ax):
     plt.savefig(photo_file, dpi=300, bbox_inches='tight')
 
 def main(run_id):
-    print("Beginning OCHRE data plotting...")
     folder_path = os.path.join(script_dir, "Ready_data", run_id)
     output_file_1 = os.path.join(folder_path, f"{run_id}_baseline_WH_power.csv")
     output_file_2 = os.path.join(folder_path, f"{run_id}_controlled_WH_power.csv")

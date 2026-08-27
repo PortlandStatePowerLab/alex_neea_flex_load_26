@@ -200,7 +200,6 @@ def pjm_precision(target, actual, reg_cap_kw):
 
 
 def main(run_id):
-    print("Beginning analysis of OCHRE data...")
     vpp_path = find_vpp_log(run_id)
     df, t_res = load_vpp_data(vpp_path)
 
@@ -223,10 +222,7 @@ def main(run_id):
     precision = pjm_precision(df["Target Delta (kW)"], df["Actual HPWH Delta (kW)"], df["Regulation Capacity (kW)"])
 
     # print(precision)
-
-    print("Finished analysing OCHRE data!")
     return ((avg_corr / 3) + (avg_delay / 3) + (precision / 3))
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

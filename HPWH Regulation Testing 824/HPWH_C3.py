@@ -30,7 +30,8 @@ def load_normalized_response(vpp_log_file):
     required_columns = {
         "Time",
         "Regulation Signal",
-        "Regulation Capacity (kW)",
+        "Up Regulation Capacity (kW)",
+        "Down Regulation Capacity (kW)",
         "Actual HPWH Delta (kW)",
     }
     missing_columns = required_columns - set(data.columns)
@@ -42,7 +43,8 @@ def load_normalized_response(vpp_log_file):
 
     numeric_columns = [
         "Regulation Signal",
-        "Regulation Capacity (kW)",
+        "Up Regulation Capacity (kW)",
+        "Down Regulation Capacity (kW)",
         "Actual HPWH Delta (kW)",
     ]
     data[numeric_columns] = data[numeric_columns].apply(
@@ -51,13 +53,28 @@ def load_normalized_response(vpp_log_file):
     data = data.dropna(subset=["Time", *numeric_columns]).copy()
     if data.empty:
         raise ValueError(f"No usable fleet-response rows were found in: {vpp_log_file}")
-    if (data["Regulation Capacity (kW)"] <= 0).any():
-        raise ValueError("Regulation Capacity (kW) must be greater than zero.")
+    if (
+        (data["Up Regulation Capacity (kW)"] <= 0).any()
+        or (data["Down Regulation Capacity (kW)"] <= 0).any()
+    ):
+        raise ValueError(
+            "Up and down regulation capacities must be greater than zero."
+        )
 
+    up_request = data["Regulation Signal"] >= 0
+    data["normalization_capacity_kw"] = data[
+        "Down Regulation Capacity (kW)"
+    ]
+    data.loc[
+        up_request, "normalization_capacity_kw"
+    ] = data.loc[
+        up_request, "Up Regulation Capacity (kW)"
+    ]
     data["normalized_actual_response"] = (
-        data["Actual HPWH Delta (kW)"] / data["Regulation Capacity (kW)"]
+        data["Actual HPWH Delta (kW)"]
+        / data["normalization_capacity_kw"]
     )
-    # print(data["normalized_actual_response"])
+
     return data.sort_values("Time")
 
 
@@ -95,6 +112,7 @@ def main(run_id):
 
     # Use one shared, symmetric axis so zero is exactly in the graph's middle.
     plotted_limit = max(
+        1.0,
         response["normalized_actual_response"].abs().max(),
         response["Regulation Signal"].abs().max(),
     )
@@ -105,12 +123,14 @@ def main(run_id):
     ax.set_xlabel("Time")
     ax.set_ylabel("Fraction of Static Regulation Capacity")
     ax.legend(loc="upper right")
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-    ax.xaxis.set_major_locator(mdates.HourLocator(interval=4))
+    time_locator = mdates.AutoDateLocator(minticks=4, maxticks=8)
+    ax.xaxis.set_major_locator(time_locator)
+    ax.xaxis.set_major_formatter(
+        mdates.ConciseDateFormatter(time_locator)
+    )
     fig.autofmt_xdate()
     fig.savefig(plot_file, dpi=300, bbox_inches="tight")
     plt.close(fig)
-    print("Finished plotting OCHRE data!")
 
 
 if __name__ == "__main__":

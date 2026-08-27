@@ -23,11 +23,9 @@ OUTPUT_PATH_D = OUTPUT_DIR / "RegD-ochre.csv"
 START_TIME = pd.Timestamp("2018-01-11 00:00:00")
 TARGET_MINUTES = 2 * 24 * 60
 
-TAU_REGA = 100.0
-TAU_NEUTRAL = 120.0
-TAU_REGD = 1.0
+TAU_REGA = 1 / 0.0077777777777777776
 
-FREQ_NORM = 0.1
+FREQ_NORM = 0.005 * 4
 
 
 def load_ace(path):
@@ -67,10 +65,14 @@ def first_order_lowpass(signal, tau, dt):
 
 
 def get_reg_signals(ace, dt):
+    """Split ACE into complementary slow and fast components.
+
+    TAU_REGA determines the crossover. For a first-order filter, the
+    -3 dB cutoff is 1 / (2*pi*TAU_REGA), or about a 10.5-minute period
+    with the current 100-second time constant.
+    """
     reg_a = first_order_lowpass(ace, tau=TAU_REGA, dt=dt)
-    reg_d_raw = ace - reg_a
-    reg_d_slow = first_order_lowpass(reg_d_raw, tau=TAU_NEUTRAL, dt=dt)
-    reg_d = first_order_lowpass(reg_d_raw - reg_d_slow, tau=TAU_REGD, dt=dt)
+    reg_d = ace - reg_a
     return reg_a, reg_d
 
 
@@ -110,6 +112,16 @@ def make_output(signal, t_res):
     )
 
 
+def clip(signal):
+    for i in range(len(signal)):
+        if signal[i] > 1:
+            signal[i] = 1
+        elif signal[i] < -1:
+            signal[i] = -1
+
+    return signal
+
+
 def main(t_res=1):
     if not isinstance(t_res, int) or t_res <= 0:
         raise ValueError("t_res must be a positive whole number of minutes.")
@@ -120,8 +132,15 @@ def main(t_res=1):
     centered_ace = 60.0 - ace["Frequency"].to_numpy()
     reg_a, reg_d = get_reg_signals(centered_ace, dt=sample_seconds)
 
+    # Check the split before the two components are normalized independently.
+    reconstruction_error = np.max(np.abs(centered_ace - (reg_a + reg_d)))
+    print(f"Maximum split reconstruction error: {reconstruction_error:.3e}")
+
     reg_a = average_normalize_and_repeat(reg_a, sample_seconds, t_res)
     reg_d = average_normalize_and_repeat(reg_d, sample_seconds, t_res)
+
+    reg_a = clip(reg_a)
+    reg_d = clip(reg_d)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     make_output(reg_a, t_res).to_csv(

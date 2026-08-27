@@ -136,7 +136,7 @@ sys.stderr = OCHREOutputFilter(sys.stderr)
 # USER SETTINGS
 #########################################
 #Gallons, MLU, MLU duration, Shed duration, ELU, ELU duration, Shed duration, Offset sheds 
-filename = 'hpwh_test_8_18_2026'
+filename = 'test_825'
 
 #"HPWH 50 Input Files", "HPWH 66 Input Files/bldg", "HPWH 80 Input Files", "HPWH All Input Files/bldg"
 Input_folder = "HPWH All Portland Input Files"
@@ -161,16 +161,16 @@ EXCEL_DIR = fl_dir
 OCHRE_DIR = os.path.dirname(os.path.dirname(EXCEL_DIR))
 RESULTS_DIR = script_dir
 INPUT_DIR = os.path.join(script_dir, Input_folder, "bldg")
-WEATHER_DIR = os.path.join(EXCEL_DIR, "Weather")
+WEATHER_DIR = os.path.join(script_dir, "Weather")
 WEATHER_FILE = os.path.join(WEATHER_DIR, "USA_OR_Portland.Intl.AP.726980_TMY3.epw")
-METADATA_DIR = os.path.join(OCHRE_DIR, "Metadata")
+METADATA_DIR = os.path.join(script_dir, "Metadata")
 XML_ADDRESS = "home.xml"
 CSV_ADDRESS = "in.schedules.csv"
 
 
 REG_TYPE = 'RegA'
 # The calculator-owned signal folder is the direct parent of HPWH.
-REG_DIR = os.path.join(EXCEL_DIR, "Reg Sig")
+REG_DIR = os.path.join(script_dir, "Reg Sig")
 REG_ADDRESS = f"{REG_TYPE}-ochre.csv"
 
 
@@ -182,14 +182,17 @@ t_res = 1.0  # minutes
 # NUM_HOMES = 10
 
 # The regulation signal is normalized to [-1, 1].  It is converted to a kW
-# request using REGULATION_CAPACITY_KW:
-#   +1.0 -> increase fleet load by REGULATION_CAPACITY_KW
-#   -1.0 -> reduce fleet load by REGULATION_CAPACITY_KW
+# request using COMMITTED_REGULATION_CAPACITY_KW:
+#   +1.0 -> increase fleet load by the committed capacity
+#   -1.0 -> reduce fleet load by the committed capacity
 #    0.0 -> return to the normal thermostat
 #
 # Set this no higher than the reliably available HPWH flexibility in the fleet.
 # The controller logs availability so this value can be calibrated after a run.
-REGULATION_CAPACITY_KW = 50.0
+COMMITTED_REGULATION_CAPACITY_KW = 0.5096
+
+UP_REG_CAP = 59.0 #kW
+DWN_REG_CAP = 0.5 #kW
 
 # Dispatch and comfort settings.  With a one-minute timestep, five minutes is
 # a conservative initial minimum command duration.  A home is always released
@@ -200,14 +203,13 @@ CONTROL_INTERVAL_MINUTES = 1
 CONTROL_INTERVAL_STEPS = max(1, round(CONTROL_INTERVAL_MINUTES / t_res))
 # SHED_MAX_TEMP_F = 76.0
 # LOAD_MIN_TEMP_F = 71.0
-# DEFAULT_LOAD_RESPONSE_KW = 3.0  # Used until a home's AC has run once.
 SHED_MIN_TANK_TEMP_F = 120
 LOAD_TARGET_TANK_TEMP_F = 130
-DEFAULT_LOAD_RESPONSE_KW = 3.0
-
-# Limit the number of previously shed HPWHs returned to normal per control
-# interval. This spreads thermal recovery instead of releasing the fleet at once.
-MAX_SHED_RELEASES_PER_INTERVAL = 4
+ACTIVE_POWER_THRESHOLD_KW = 0.1
+EXPECTED_ON_POWER_KW = 0.5
+FEEDBACK_GAIN = 0.4
+TRACKING_DEADBAND_KW = 0.25
+MAX_RESPONSE_CHANGE_KW_PER_INTERVAL = 2
 
 
 # HPWH control parameters (°F)
@@ -264,13 +266,13 @@ def configure(parameters=None):
     if not isinstance(parameters, dict):
         raise TypeError("parameters must be a dictionary keyed by calculator parameter name.")
 
-    global DEFAULT_LOAD_RESPONSE_KW, SHED_MIN_TANK_TEMP_F
+    global EXPECTED_ON_POWER_KW, SHED_MIN_TANK_TEMP_F
     global LOAD_TARGET_TANK_TEMP_F, Tcontrol_SHEDF, Tcontrol_LOADF
     global MIN_HOLD_MINUTES, CONTROL_INTERVAL_MINUTES
 
     applied = []
     if parameters.get("comp_pwr") not in (None, ""):
-        DEFAULT_LOAD_RESPONSE_KW = _positive_number("comp_pwr", parameters["comp_pwr"])
+        EXPECTED_ON_POWER_KW = _positive_number("comp_pwr", parameters["comp_pwr"])
         applied.append("comp_pwr")
     if parameters.get("min_water_temp") not in (None, ""):
         SHED_MIN_TANK_TEMP_F = _positive_number("min_water_temp", parameters["min_water_temp"])
@@ -363,21 +365,41 @@ def save_sig(reg_sig):
     # print("Filtered regulation signal saved.")
 
 
-# REG_SIGNAL = signal_aggregator_mean()
-import numpy as np
+REG_SIGNAL = pd.Series(dtype=float)
 
-duration_min = Duration * 24 * 60
-frequency = f"{t_res}min"
-period = int(duration_min / t_res)
-sim_times = pd.date_range(start=Start, periods=period, freq=frequency)
-x = np.arange(0, 1440*0.1, 0.1)
-REG_SIGNAL = pd.Series(
-    np.sin(x),
-    index=sim_times
-)
-# import matplotlib.pyplot as plt
-# plt.plot(sim_times[-100:], np.sin(x)[-100:], color='green')
-# plt.show()
+
+def configure_regulation(reg_type):
+    """Select and load the regulation signal used by this B2 run."""
+    global REG_TYPE, REG_ADDRESS, REG_SIGNAL
+
+    normalized_types = {"rega": "RegA", "regd": "RegD"}
+    try:
+        selected_type = normalized_types[str(reg_type).strip().lower()]
+    except KeyError as exc:
+        raise ValueError(
+            f"reg_type must be 'RegA' or 'RegD'; received {reg_type!r}."
+        ) from exc
+
+    signal_file = os.path.join(REG_DIR, f"{selected_type}-ochre.csv")
+    if not os.path.isfile(signal_file):
+        raise FileNotFoundError(f"Regulation signal file not found: {signal_file}")
+
+    REG_TYPE = selected_type
+    REG_ADDRESS = f"{REG_TYPE}-ochre.csv"
+    REG_SIGNAL = signal_aggregator_mean()
+
+
+    import numpy as np
+    duration_min = Duration * 24 * 60
+    frequency = f"{t_res}min"
+    period = int(duration_min / t_res)
+    sim_times = pd.date_range(start=Start, periods=period, freq=frequency)
+    x = np.arange(0, 1440*0.1, 0.1)
+    REG_SIGNAL = pd.Series(
+        np.sin(x),
+        index=sim_times
+    )
+    return signal_file
 #########################################
 # TEMPERATURE CONVERSIONS F to C
 #########################################
@@ -409,22 +431,51 @@ def _clean_power(value, default=0.0):
     return value if pd.notna(value) and value > 0 else default
 
 
-def _estimated_response_kw(home, mode):
-    """Estimate the incremental response from dispatching one home.
+def _estimated_incremental_load_kw(home):
+    current_kw = _clean_power(home.get("last_ctrl_hpwh_kw"))
 
-    For a shed, the currently operating HPWH power is the best available
-    estimate.  For load, use the home's most recent HPWH power when available,
-    otherwise use a configurable fleet-average starting estimate.
-    """
-    hpwh_kw = _clean_power(home.get("last_hpwh_kw"))
-    if mode == "SHED":
-        return hpwh_kw
-    return hpwh_kw if hpwh_kw > 0 else DEFAULT_LOAD_RESPONSE_KW
+    if current_kw > ACTIVE_POWER_THRESHOLD_KW:
+        return 0.0  # Already operating; little upward response available.
 
+    return max(0.0, EXPECTED_ON_POWER_KW - current_kw)
+
+
+def _estimated_incremental_shed_kw(home):
+    current_kw = _clean_power(home.get("last_ctrl_hpwh_kw"))
+
+    if current_kw <= ACTIVE_POWER_THRESHOLD_KW:
+        return 0.0
+
+    return max(0.0, current_kw)
+
+
+def estimate_up_capacity_kw(fleet_data):
+    """Additional HPWH power available by loading eligible NORMAL homes."""
+    return sum(
+        _estimated_incremental_load_kw(home)
+        for home in fleet_data
+        if (
+            home["override"] == "NORMAL"
+            and _load_eligible(home)
+        )
+    )
+
+
+def estimate_down_capacity_kw(fleet_data):
+    """HPWH power available for shedding eligible NORMAL homes."""
+    return sum(
+        _estimated_incremental_shed_kw(home)
+        for home in fleet_data
+        if (
+            home["override"] == "NORMAL"
+            and _shed_eligible(home)
+        )
+    )
 
 def _shed_eligible(home):
     return (
-        _clean_power(home.get("last_hpwh_kw")) > 0.1
+        _clean_power(home.get("last_ctrl_hpwh_kw"))
+        > ACTIVE_POWER_THRESHOLD_KW
         and home.get("last_tank_temp_c", TbaselineC) >= SHED_MIN_TANK_TEMP_C
         and home.get("lockout_steps", 0) == 0
     )
@@ -432,147 +483,316 @@ def _shed_eligible(home):
 
 def _load_eligible(home):
     return (
-        home.get("last_tank_temp_c", TbaselineC) <= LOAD_TARGET_TANK_TEMP_C
+        _clean_power(home.get("last_ctrl_hpwh_kw"))
+        <= ACTIVE_POWER_THRESHOLD_KW
+        and home.get("last_tank_temp_c", TbaselineC) <= LOAD_TARGET_TANK_TEMP_C
         and home.get("lockout_steps", 0) == 0
     )
 
 
-def dispatch_regulation_signal(fleet_data, reg_sig):
-    """Dispatch eligible homes toward the requested kW regulation target.
-
-    Negative signals shed HPWHs that are currently on.  Positive signals
-    preheat cooler tanks.  The selection uses physical state and estimated kW
-    response rather than a fixed percentage of all homes.
-    """
+def _normalise_reg_signal(reg_sig):
     try:
         reg_sig = float(reg_sig)
     except (TypeError, ValueError):
         reg_sig = 0.0
-
     if pd.isna(reg_sig):
         reg_sig = 0.0
-    reg_sig = max(-1.0, min(1.0, reg_sig))
+    return max(-1.0, min(1.0, reg_sig))
 
-    target_delta_kw = reg_sig * REGULATION_CAPACITY_KW
-    requested_mode = "LOAD" if target_delta_kw > 0 else "SHED"
 
-    # A SHED request may end abruptly. Do not release every shed home at once:
-    # hold the remaining shed homes temporarily and return only a small batch
-    # to normal operation each control interval.
-    retained_kw = 0.0
+def _releasable(home, mode):
+    return (
+        home.get("override") == mode
+        and home.get("lockout_steps", 0) == 0
+        and not home.get("changed_this_interval", False)
+    )
 
-    for home in fleet_data:
-        home["released_this_interval"] = False
 
-        if home.get("lockout_steps", 0) > 0:
-            home["lockout_steps"] = max(
-                0,
-                home["lockout_steps"] - CONTROL_INTERVAL_STEPS
-            )
+def _release_home(home):
+    """Release one command and return its signed estimated response change."""
+    mode = home.get("override", "NORMAL")
+    response_kw = _clean_power(home.get("dispatch_kw"))
+    signed_change_kw = response_kw if mode == "SHED" else -response_kw
+    home["override"] = "NORMAL"
+    home["lockout_steps"] = 0
+    home["dispatch_kw"] = 0.0
+    home["changed_this_interval"] = True
+    return signed_change_kw
 
-        # On a neutral or positive request, keep SHED homes in their present
-        # state for now. They are released below in controlled batches.
+
+def _current_estimated_dispatch_kw(fleet_data):
+    """Return the signed estimated response of all persistent commands."""
+    return sum(
+        _clean_power(home.get("dispatch_kw"))
+        * (1 if home.get("override") == "LOAD" else -1)
+        for home in fleet_data
+        if home.get("override") in {"LOAD", "SHED"}
+    )
+
+
+def _available_adjustment_capacity_kw(fleet_data):
+    """Return immediately actionable upward and downward response capacity."""
+    releasable_shed_kw = sum(
+        _clean_power(home.get("dispatch_kw"))
+        for home in fleet_data
+        if _releasable(home, "SHED")
+    )
+    releasable_load_kw = sum(
+        _clean_power(home.get("dispatch_kw"))
+        for home in fleet_data
+        if _releasable(home, "LOAD")
+    )
+    available_up_kw = estimate_up_capacity_kw(fleet_data) + releasable_shed_kw
+    available_down_kw = estimate_down_capacity_kw(fleet_data) + releasable_load_kw
+    return available_up_kw, available_down_kw
+
+
+def _apply_actions(candidates, action, requested_change_kw):
+    """Apply one ordered action list subject to the per-interval kW limit."""
+    applied_magnitude_kw = 0.0
+    changed_count = 0
+
+    for home in candidates:
+        if applied_magnitude_kw >= requested_change_kw:
+            break
+
+        if action == "RELEASE_LOAD" or action == "RELEASE_SHED":
+            response_kw = _clean_power(home.get("dispatch_kw"))
+        elif action == "ADD_LOAD":
+            response_kw = _estimated_incremental_load_kw(home)
+        else:
+            response_kw = _estimated_incremental_shed_kw(home)
+
+        if response_kw <= 0:
+            continue
         if (
-            home.get("override") == "SHED"
-            and target_delta_kw >= 0
+            applied_magnitude_kw + response_kw
+            > MAX_RESPONSE_CHANGE_KW_PER_INTERVAL + 1e-9
         ):
             continue
 
-        # Other incompatible commands can still be released immediately.
-        if target_delta_kw == 0 or home.get("override") != requested_mode:
-            home["override"] = "NORMAL"
-            home["lockout_steps"] = 0
+        if action == "RELEASE_LOAD" or action == "RELEASE_SHED":
+            _release_home(home)
+        else:
+            home["override"] = "LOAD" if action == "ADD_LOAD" else "SHED"
+            home["lockout_steps"] = MIN_HOLD_STEPS
+            home["dispatch_kw"] = response_kw
+            home["dispatch_count"] = home.get("dispatch_count", 0) + 1
+            home["changed_this_interval"] = True
 
-        elif home.get("override") == requested_mode:
-            if home.get("lockout_steps", 0) > 0:
-                retained_kw += home.get(
-                    "dispatch_kw",
-                    _estimated_response_kw(home, requested_mode)
-                )
-            else:
-                home["override"] = "NORMAL"
+        applied_magnitude_kw += response_kw
+        changed_count += 1
 
-    # Gradually release shed homes when the request is neutral or turns into
-    # a positive/load request. Always release tanks at or below the comfort
-    # threshold, even if that exceeds the normal batch size.
-    if target_delta_kw >= 0:
-        shed_homes = [
-            home for home in fleet_data
-            if home.get("override") == "SHED"
-        ]
+    return applied_magnitude_kw, changed_count
 
-        urgent_releases = [
-            home for home in shed_homes
-            if home.get("last_tank_temp_c", TbaselineC)
+
+def dispatch_regulation_signal(fleet_data, reg_sig, previous_actual_delta_kw):
+    """Adjust persistent HPWH commands using signed fleet-response feedback."""
+    reg_sig = _normalise_reg_signal(reg_sig)
+    if reg_sig > 0:
+        target_delta_kw = reg_sig * UP_REG_CAP
+    elif reg_sig < 0:
+        target_delta_kw = reg_sig * DWN_REG_CAP
+    else:
+        target_delta_kw = reg_sig * COMMITTED_REGULATION_CAPACITY_KW
+
+    for home in fleet_data:
+        home["changed_this_interval"] = False
+        if home.get("lockout_steps", 0) > 0:
+            home["lockout_steps"] = max(
+                0,
+                home["lockout_steps"] - CONTROL_INTERVAL_STEPS,
+            )
+
+    counts = {
+        "added_load": 0,
+        "released_load": 0,
+        "added_shed": 0,
+        "released_shed": 0,
+    }
+    applied_adjustment_kw = 0.0
+
+    # Comfort limits override minimum holds. These homes cannot be selected
+    # for another command during the same interval.
+    urgent_shed_releases = [
+        home for home in fleet_data
+        if (
+            home.get("override") == "SHED"
+            and home.get("last_tank_temp_c", TbaselineC)
             <= SHED_MIN_TANK_TEMP_C
-        ]
+        )
+    ]
+    urgent_load_releases = [
+        home for home in fleet_data
+        if (
+            home.get("override") == "LOAD"
+            and home.get("last_tank_temp_c", TbaselineC)
+            >= LOAD_TARGET_TANK_TEMP_C
+        )
+    ]
+    for home in urgent_shed_releases:
+        applied_adjustment_kw += _release_home(home)
+        counts["released_shed"] += 1
+    for home in urgent_load_releases:
+        applied_adjustment_kw += _release_home(home)
+        counts["released_load"] += 1
 
-        normal_releases = [
-            home for home in shed_homes
-            if home not in urgent_releases
-        ]
+    predicted_delta_kw = previous_actual_delta_kw + applied_adjustment_kw
+    available_up_kw, available_down_kw = (
+        _available_adjustment_capacity_kw(fleet_data)
+    )
+    capacity_limited_target_kw = min(
+        max(
+            target_delta_kw,
+            predicted_delta_kw - available_down_kw,
+        ),
+        predicted_delta_kw + available_up_kw,
+    )
+    feedback_error_kw = capacity_limited_target_kw - predicted_delta_kw
+    raw_adjustment_kw = FEEDBACK_GAIN * feedback_error_kw
+    requested_adjustment_kw = raw_adjustment_kw
+    requested_adjustment_kw = max(
+        -MAX_RESPONSE_CHANGE_KW_PER_INTERVAL,
+        min(MAX_RESPONSE_CHANGE_KW_PER_INTERVAL, requested_adjustment_kw),
+    )
+    feedback_applied_kw = 0.0
 
-        # Release cooler tanks first for comfort. Dispatch count breaks ties
-        # so the same homes are not always favored.
-        normal_releases.sort(
+    if feedback_error_kw > TRACKING_DEADBAND_KW:
+        remaining_kw = requested_adjustment_kw
+        release_candidates = sorted(
+            (
+                home for home in fleet_data
+                if _releasable(home, "SHED")
+            ),
             key=lambda home: (
                 home.get("last_tank_temp_c", TbaselineC),
                 home.get("dispatch_count", 0),
-            )
+            ),
         )
+        released_kw, released_count = _apply_actions(
+            release_candidates,
+            "RELEASE_SHED",
+            remaining_kw,
+        )
+        feedback_applied_kw += released_kw
+        counts["released_shed"] += released_count
+        remaining_kw = max(0.0, remaining_kw - released_kw)
 
-        selected_releases = urgent_releases + normal_releases[
-            :max(0, MAX_SHED_RELEASES_PER_INTERVAL - len(urgent_releases))
-        ]
+        load_candidates = sorted(
+            (
+                home for home in fleet_data
+                if (
+                    home.get("override") == "NORMAL"
+                    and not home.get("changed_this_interval", False)
+                    and _load_eligible(home)
+                )
+            ),
+            key=lambda home: (
+                home.get("last_tank_temp_c", TbaselineC),
+                home.get("dispatch_count", 0),
+            ),
+        )
+        loaded_kw, loaded_count = _apply_actions(
+            load_candidates,
+            "ADD_LOAD",
+            remaining_kw,
+        )
+        feedback_applied_kw += loaded_kw
+        counts["added_load"] += loaded_count
 
-        for home in selected_releases:
-            home["override"] = "NORMAL"
-            home["lockout_steps"] = 0
-            home["released_this_interval"] = True
+    elif feedback_error_kw < -TRACKING_DEADBAND_KW:
+        remaining_kw = abs(requested_adjustment_kw)
+        release_candidates = sorted(
+            (
+                home for home in fleet_data
+                if _releasable(home, "LOAD")
+            ),
+            key=lambda home: (
+                -home.get("last_tank_temp_c", TbaselineC),
+                home.get("dispatch_count", 0),
+            ),
+        )
+        released_kw, released_count = _apply_actions(
+            release_candidates,
+            "RELEASE_LOAD",
+            remaining_kw,
+        )
+        feedback_applied_kw -= released_kw
+        counts["released_load"] += released_count
+        remaining_kw = max(0.0, remaining_kw - released_kw)
 
-    if target_delta_kw == 0:
-        return reg_sig, target_delta_kw, 0.0, 0, 0.0, 0.0
+        shed_candidates = sorted(
+            (
+                home for home in fleet_data
+                if (
+                    home.get("override") == "NORMAL"
+                    and not home.get("changed_this_interval", False)
+                    and _shed_eligible(home)
+                )
+            ),
+            key=lambda home: (
+                -home.get("last_tank_temp_c", TbaselineC),
+                home.get("dispatch_count", 0),
+            ),
+        )
+        shed_kw, shed_count = _apply_actions(
+            shed_candidates,
+            "ADD_SHED",
+            remaining_kw,
+        )
+        feedback_applied_kw -= shed_kw
+        counts["added_shed"] += shed_count
 
-    if requested_mode == "SHED":
-        candidates = [
-            home for home in fleet_data
-            if (
-                home.get("override") == "NORMAL"
-                and not home.get("released_this_interval", False)
-                and _shed_eligible(home)
-            )
-        ]
-        # Turn off the largest operating units first, subject to comfort.
-        candidates.sort(key=lambda home: (-_estimated_response_kw(home, "SHED"), home.get("dispatch_count", 0)))
-    else:
-        candidates = [
-            home for home in fleet_data
-            if (
-                home.get("override") == "NORMAL"
-                and not home.get("released_this_interval", False)
-                and _load_eligible(home)
-            )
-        ]
-        # Pre-cool the warmest homes first.
-        candidates.sort(key=lambda home: (home.get("last_tank_temp_c", TbaselineC), home.get("dispatch_count", 0)))
+    applied_adjustment_kw += feedback_applied_kw
+    achieved_feedback_kw = abs(feedback_applied_kw)
+    requested_feedback_kw = abs(requested_adjustment_kw)
+    controller_saturated = (
+        abs(capacity_limited_target_kw - target_delta_kw)
+        > TRACKING_DEADBAND_KW
+        or abs(raw_adjustment_kw)
+        > MAX_RESPONSE_CHANGE_KW_PER_INTERVAL + 1e-9
+        or achieved_feedback_kw + TRACKING_DEADBAND_KW
+        < requested_feedback_kw
+    )
+    requested_mode = (
+        "LOAD" if target_delta_kw > 0
+        else "SHED" if target_delta_kw < 0
+        else "NORMAL"
+    )
+    dispatched_units = sum(
+        home.get("override") == requested_mode
+        for home in fleet_data
+    ) if requested_mode != "NORMAL" else 0
+    retained_kw = sum(
+        _clean_power(home.get("dispatch_kw"))
+        for home in fleet_data
+        if (
+            home.get("override") in {"LOAD", "SHED"}
+            and home.get("lockout_steps", 0) > 0
+        )
+    )
+    available_requested_kw = (
+        available_up_kw if target_delta_kw >= predicted_delta_kw
+        else available_down_kw
+    )
 
-    available_kw = sum(_estimated_response_kw(home, requested_mode) for home in candidates)
-    dispatched_kw = retained_kw
-    dispatched_units = sum(home.get("override") == requested_mode for home in fleet_data)
-
-    for home in candidates:
-        if (dispatched_kw >= abs(target_delta_kw)):# or (dispatched_kw >= REGULATION_CAPACITY_KW):
-            break
-        response_kw = _estimated_response_kw(home, requested_mode)
-        home["override"] = requested_mode
-        home["lockout_steps"] = MIN_HOLD_STEPS
-        home["dispatch_kw"] = response_kw
-        home["dispatch_count"] += 1
-        dispatched_kw += response_kw
-        dispatched_units += 1
-
-    return (reg_sig, target_delta_kw, dispatched_kw, dispatched_units,
-            available_kw, retained_kw)
+    return {
+        "reg_sig": reg_sig,
+        "target_delta_kw": target_delta_kw,
+        "capacity_limited_target_kw": capacity_limited_target_kw,
+        "previous_actual_delta_kw": previous_actual_delta_kw,
+        "feedback_error_kw": feedback_error_kw,
+        "requested_adjustment_kw": requested_adjustment_kw,
+        "applied_adjustment_kw": applied_adjustment_kw,
+        "available_up_kw": available_up_kw,
+        "available_down_kw": available_down_kw,
+        "available_requested_kw": available_requested_kw,
+        "estimated_dispatch_kw": _current_estimated_dispatch_kw(fleet_data),
+        "dispatched_units": dispatched_units,
+        "retained_kw": retained_kw,
+        "controller_saturated": controller_saturated,
+        **counts,
+    }
 
 def filter_schedules(home_path):
     orig_sched_file = os.path.join(home_path, CSV_ADDRESS)
@@ -669,6 +889,7 @@ def determine_hpwh_control(global_mode="NORMAL"):
     if global_mode == "SHED":
         ctrl_signal['Water Heating'].update({'Setpoint': Tcontrol_SHEDC})
         ctrl_signal['Water Heating'].update({'Deadband': Tcontrol_deadbandC})
+        ctrl_signal["Water Heating"].update({'Load Fraction': 0})
     elif global_mode == "LOAD":
         ctrl_signal['Water Heating'].update({'Setpoint': Tcontrol_LOADC})
         ctrl_signal['Water Heating'].update({'Deadband': Tcontrol_LOADdeadbandC})
@@ -697,12 +918,12 @@ def initialize_home(home_path, weather_file_path):
             milliseconds=0,
             microseconds=0
         ),
-        "verbosity": 6,
+        "verbosity": 7,
         "Equipment": {
             "Water Heating": {
                 "Initial Temperature (C)": TinitC,
                 "hp_only_mode": True,
-                "Max Tank Temperature": MAX_TANK_TEMPERATURE_C,
+                "Max Tank Temperature (C)": MAX_TANK_TEMPERATURE_C,
                 "Upper Node": 3,
                 "Lower Node": 10,
                 "Upper Node Weight": 0.75,
@@ -778,7 +999,7 @@ def update_home_worker(home_data):
             "base_kw": get_metric(base_metrics, home_data["base"], "Total Electric Power (kW)"),
             "ctrl_kw": get_metric(ctrl_metrics, home_data["sim"], "Total Electric Power (kW)"),
             "ctrl_hpwh_kw": get_metric(ctrl_metrics, home_data["sim"], "Water Heating Electric Power (kW)"),
-            "tank_temp_c": get_metric(ctrl_metrics, home_data["sim"], "Water Heating Control Temperature (C)"),
+            "tank_temp_c": get_metric(ctrl_metrics, home_data["sim"], "Hot Water Average Temperature (C)"),
             "base_hpwh_kw": get_metric(base_metrics, home_data["base"], "Water Heating Electric Power (kW)"),
         }
     except Exception as e:
@@ -792,10 +1013,8 @@ def update_home_worker(home_data):
 # MAIN EXECUTION
 #########################################
 
-def main(parameters=None, run_id=None):
+def main(parameters=None, run_id=None, reg_type="RegA"):
     """Run the HPWH B2 fleet simulation using calculator parameters."""
-
-    global REG_SIGNAL
 
     effective_run_id = run_id or filename
 
@@ -804,7 +1023,8 @@ def main(parameters=None, run_id=None):
     # ============================================================
 
     configuration = configure(parameters)
-    # REG_SIGNAL = signal_aggregator_mean()
+    signal_file = configure_regulation(reg_type)
+    # print(f"Regulation type: {REG_TYPE} ({signal_file})", flush=True)
 
     # ============================================================
     # 1. Directory Setup
@@ -867,6 +1087,7 @@ def main(parameters=None, run_id=None):
         first_building_initialized = False
         last_report_time = None
         last_reported_count = 0
+        last_reported_percent = 0
 
         while pending:
 
@@ -897,25 +1118,32 @@ def main(parameters=None, run_id=None):
                 last_report_time = time.monotonic()
                 last_reported_count = initialized_count
 
+                percent_init = int(
+                    100 * initialized_count / initial_home_count
+                )
+                last_reported_percent = percent_init
+
                 print(
-                    f"{initialized_count} / "
-                    f"{initial_home_count} homes initialized",
+                    f"{percent_init}% initialized",
                     flush=True
                 )
 
             # Report every 5 seconds.
             elif (
                 first_building_initialized
-                and time.monotonic() - last_report_time >= 8
+                and time.monotonic() - last_report_time >= 20
             ):
 
-                if initialized_count != last_reported_count:
+                percent_init = int(
+                    100 * initialized_count / initial_home_count
+                )
 
+                if initialized_count != last_reported_count and percent_init != last_reported_percent:
                     print(
-                        f"{initialized_count} / "
-                        f"{initial_home_count} homes initialized",
+                        f"{percent_init}% initialized",
                         flush=True
                     )
+                    last_reported_percent = percent_init
 
                     last_reported_count = initialized_count
 
@@ -926,9 +1154,15 @@ def main(parameters=None, run_id=None):
 
         if initialized_count != last_reported_count:
 
+            percent_init = int(
+                100 * initialized_count / initial_home_count
+            )
+
+            if percent_init >= 98:
+                percent_init = 100
+            
             print(
-                f"{initialized_count} / "
-                f"{initial_home_count} homes initialized",
+                f"{percent_init}% initialized",
                 flush=True
             )
 
@@ -956,6 +1190,7 @@ def main(parameters=None, run_id=None):
     sim_times = fleet_data[0]["base"].sim_times
 
     average_power_kw = 0.0
+    previous_actual_delta_kw = 0.0
     vpp_state_log = []
 
     total_steps = len(sim_times)
@@ -985,68 +1220,82 @@ def main(parameters=None, run_id=None):
             # ----------------------------------------------------
 
             if (step_index - 1) % CONTROL_INTERVAL_STEPS == 0:
-
-                (
-                    reg_sig,
-                    target_delta_kw,
-                    estimated_dispatch_kw,
-                    dispatched_units,
-                    available_kw,
-                    retained_kw,
-                ) = dispatch_regulation_signal(
+                dispatch_state = dispatch_regulation_signal(
                     fleet_data,
-                    raw_reg_sig
+                    raw_reg_sig,
+                    previous_actual_delta_kw,
                 )
 
             else:
-
-                try:
-                    reg_sig = float(raw_reg_sig)
-                except (TypeError, ValueError):
-                    reg_sig = 0.0
-
-                if pd.isna(reg_sig):
-                    reg_sig = 0.0
-
-                reg_sig = max(-1.0, min(1.0, reg_sig))
-
-                target_delta_kw = (
-                    reg_sig * REGULATION_CAPACITY_KW
-                )
-
-                active_mode = (
-                    "LOAD"
-                    if target_delta_kw > 0
-                    else "SHED"
-                )
-
-                active_homes = [
-                    home
-                    for home in fleet_data
-                    if home.get("override") == active_mode
-                ]
-
-                estimated_dispatch_kw = sum(
-                    home.get("dispatch_kw", 0.0)
-                    for home in active_homes
-                )
-
-                dispatched_units = len(active_homes)
-
-                available_kw = sum(
-                    _estimated_response_kw(
-                        home,
-                        active_mode
+                reg_sig = _normalise_reg_signal(raw_reg_sig)
+                if reg_sig > 0:
+                    target_delta_kw = reg_sig * UP_REG_CAP
+                elif reg_sig < 0:
+                    target_delta_kw = reg_sig * DWN_REG_CAP
+                else:
+                    target_delta_kw = (
+                        reg_sig * COMMITTED_REGULATION_CAPACITY_KW
                     )
-                    for home in fleet_data
-                    if (
-                        _load_eligible(home)
-                        if active_mode == "LOAD"
-                        else _shed_eligible(home)
-                    )
+                available_up_kw, available_down_kw = (
+                    _available_adjustment_capacity_kw(fleet_data)
                 )
+                capacity_limited_target_kw = min(
+                    max(
+                        target_delta_kw,
+                        previous_actual_delta_kw - available_down_kw,
+                    ),
+                    previous_actual_delta_kw + available_up_kw,
+                )
+                requested_mode = (
+                    "LOAD" if target_delta_kw > 0
+                    else "SHED" if target_delta_kw < 0
+                    else "NORMAL"
+                )
+                dispatch_state = {
+                    "reg_sig": reg_sig,
+                    "target_delta_kw": target_delta_kw,
+                    "capacity_limited_target_kw": capacity_limited_target_kw,
+                    "previous_actual_delta_kw": previous_actual_delta_kw,
+                    "feedback_error_kw": (
+                        capacity_limited_target_kw
+                        - previous_actual_delta_kw
+                    ),
+                    "requested_adjustment_kw": 0.0,
+                    "applied_adjustment_kw": 0.0,
+                    "available_up_kw": available_up_kw,
+                    "available_down_kw": available_down_kw,
+                    "available_requested_kw": (
+                        available_up_kw
+                        if target_delta_kw >= previous_actual_delta_kw
+                        else available_down_kw
+                    ),
+                    "estimated_dispatch_kw": (
+                        _current_estimated_dispatch_kw(fleet_data)
+                    ),
+                    "dispatched_units": sum(
+                        home.get("override") == requested_mode
+                        for home in fleet_data
+                    ) if requested_mode != "NORMAL" else 0,
+                    "retained_kw": sum(
+                        _clean_power(home.get("dispatch_kw"))
+                        for home in fleet_data
+                        if (
+                            home.get("override") in {"LOAD", "SHED"}
+                            and home.get("lockout_steps", 0) > 0
+                        )
+                    ),
+                    "controller_saturated": (
+                        abs(capacity_limited_target_kw - target_delta_kw)
+                        > TRACKING_DEADBAND_KW
+                    ),
+                    "added_load": 0,
+                    "released_load": 0,
+                    "added_shed": 0,
+                    "released_shed": 0,
+                }
 
-                retained_kw = estimated_dispatch_kw
+            reg_sig = dispatch_state["reg_sig"]
+            target_delta_kw = dispatch_state["target_delta_kw"]
 
             # ----------------------------------------------------
             # Advance every active dwelling
@@ -1156,6 +1405,7 @@ def main(parameters=None, run_id=None):
                 target_delta_kw
                 - hpwh_actual_delta_kw
             )
+            previous_actual_delta_kw = hpwh_actual_delta_kw
 
             aggregate_power_kw = (
                 current_step_aggregate_power
@@ -1194,22 +1444,53 @@ def main(parameters=None, run_id=None):
             vpp_state_log.append({
                 "Time": sim_time,
                 "Regulation Signal": reg_sig,
-                "Regulation Capacity (kW)": REGULATION_CAPACITY_KW,
+                "Up Regulation Capacity (kW)":
+                    UP_REG_CAP,
+                "Down Regulation Capacity (kW)":
+                    DWN_REG_CAP,
+                "Available Up Capacity (kW)":
+                    dispatch_state["available_up_kw"],
+                "Available Down Capacity (kW)":
+                    dispatch_state["available_down_kw"],
+                "Committed Regulation Capacity (kW)": COMMITTED_REGULATION_CAPACITY_KW,
+                "Target Before Capacity Limit (kW)":
+                    dispatch_state["target_delta_kw"],
+                "Capacity-Limited Target (kW)":
+                    dispatch_state["capacity_limited_target_kw"],
                 "Target Delta (kW)": target_delta_kw,
                 "Actual Delta (kW)": hpwh_actual_delta_kw,
                 "Tracking Error (kW)": tracking_error_kw,
+                "Previous Actual Delta (kW)":
+                    dispatch_state["previous_actual_delta_kw"],
+                "Feedback Error (kW)":
+                    dispatch_state["feedback_error_kw"],
+                "Requested Adjustment (kW)":
+                    dispatch_state["requested_adjustment_kw"],
+                "Applied Adjustment (kW)":
+                    dispatch_state["applied_adjustment_kw"],
+                "Controller Saturated":
+                    dispatch_state["controller_saturated"],
 
                 "Available Capacity in Requested Direction (kW)":
-                    available_kw,
+                    dispatch_state["available_requested_kw"],
 
                 "Estimated Dispatched Capacity (kW)":
-                    estimated_dispatch_kw,
+                    dispatch_state["estimated_dispatch_kw"],
 
                 "Retained Capacity (kW)":
-                    retained_kw,
+                    dispatch_state["retained_kw"],
 
                 "Requested Dispatch Units":
-                    dispatched_units,
+                    dispatch_state["dispatched_units"],
+
+                "Units Added to LOAD":
+                    dispatch_state["added_load"],
+                "Units Released from LOAD":
+                    dispatch_state["released_load"],
+                "Units Added to SHED":
+                    dispatch_state["added_shed"],
+                "Units Released from SHED":
+                    dispatch_state["released_shed"],
 
                 "Actual Average Power (kW)":
                     average_power_kw,
@@ -1269,7 +1550,7 @@ def main(parameters=None, run_id=None):
         "Water Heating Deadband Upper Limit (C)",
         "Water Heating Deadband Lower Limit (C)",
         "Water Heating Heat Pump COP (-)",
-        "Water Heating Control Temperature (C)",
+        "Hot Water Average Temperature (C)",
         "Hot Water Outlet Temperature (C)",
     ]
 
@@ -1429,11 +1710,6 @@ def main(parameters=None, run_id=None):
     # 9. Final Message
     # ============================================================
 
-    print(
-        "Simulation finished.",
-        flush=True
-    )
-
     return {
         "configuration": configuration,
         "homes_simulated": len(successful_finalizations),
@@ -1444,3 +1720,7 @@ def main(parameters=None, run_id=None):
 
 if __name__ == "__main__":
     main()
+    print(
+        "Simulation finished.",
+        flush=True
+    )

@@ -72,8 +72,6 @@ def process_data(input_file, output_file, wanted_col):
     df_pivot.to_csv(output_file, index=True)
 
 def main(run_id):
-    print("Beginning OCHRE data processing...")
-
     input_file_1 = os.path.join(script_dir, f"{run_id}_baseline.csv")
     input_file_2 = os.path.join(script_dir, f"{run_id}_controlled.csv")
     folder_path = os.path.join(script_dir, "Ready_data", run_id)
@@ -88,8 +86,6 @@ def main(run_id):
     process_data(input_file_2, output_file_2, 'Water Heating Electric Power (kW)')
     process_data(input_file_1, output_file_3, 'Total Electric Power (kW)')
     process_data(input_file_2, output_file_4, 'Total Electric Power (kW)')
-
-    print("OCHRE data processed!")
 
 
 if __name__ == "__main__":
