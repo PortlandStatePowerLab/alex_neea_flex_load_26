@@ -12,18 +12,16 @@ Based on PJM manual 12, 2020
 import os
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-import datetime as dt
 import argparse
 
 
 # ---------------------------------------------------------------------------
-# USER SETTINGS
+# SCORING SETTINGS
 # ---------------------------------------------------------------------------
 
-# Set True to display plots after saving them.
-SHOW_PLOTS = False
+SCORING_WINDOW_MINUTES = 5.0
+MAX_TIMESTEP_MINUTES = 1.0
+MIN_CONTIGUOUS_MINUTES = 15.0
 
 
 # ---------------------------------------------------------------------------
@@ -60,10 +58,10 @@ def load_vpp_data(path):
 
     required = {
         "Time",
-        "Regulation Capacity (kW)",
+        "Up Regulation Capacity (kW)",
+        "Down Regulation Capacity (kW)",
         "Target Delta (kW)",
         "Actual HPWH Delta (kW)",
-        "Tracking Error (kW)",
     }
 
     missing = required - set(df.columns)
@@ -75,27 +73,88 @@ def load_vpp_data(path):
 
     df["Time"] = pd.to_datetime(df["Time"], errors="coerce")
     numeric_columns = [
-        "Regulation Capacity (kW)",
+        "Up Regulation Capacity (kW)",
+        "Down Regulation Capacity (kW)",
         "Target Delta (kW)",
         "Actual HPWH Delta (kW)",
-        "Tracking Error (kW)",
     ]
     df[numeric_columns] = df[numeric_columns].apply(pd.to_numeric, errors="coerce")
-    df = df.dropna(
-        subset=["Time", "Regulation Capacity (kW)", "Target Delta (kW)", "Actual HPWH Delta (kW)"]
-    ).copy()
+
+    invalid_rows = df[["Time", *numeric_columns]].isna().any(axis=1)
+    if invalid_rows.any():
+        raise ValueError(
+            f"VPP log contains {int(invalid_rows.sum())} row(s) with an invalid "
+            "timestamp or required numeric value."
+        )
+
+    if df.empty:
+        raise ValueError("VPP log contains no scoreable rows.")
 
     df = df.sort_values("Time")
-    df = df.drop_duplicates(subset="Time")
+    duplicate_times = df["Time"].duplicated(keep=False)
+    if duplicate_times.any():
+        raise ValueError(
+            f"VPP log contains {int(duplicate_times.sum())} row(s) with duplicate timestamps."
+        )
+
+    capacity_columns = [
+        "Up Regulation Capacity (kW)",
+        "Down Regulation Capacity (kW)",
+    ]
+    if (df[capacity_columns] <= 0).any().any():
+        raise ValueError("Up and down regulation capacities must remain greater than zero.")
 
     # Infer the actual simulation timestep from timestamps.
-    diffs = df["Time"].diff().dt.total_seconds().dropna() / 60.0
-    timestep_minutes = diffs.median()
+    diffs_seconds = df["Time"].diff().dt.total_seconds().dropna()
+    if diffs_seconds.empty:
+        raise ValueError("VPP log must contain at least two timestamps.")
 
-    if not np.isfinite(timestep_minutes) or timestep_minutes <= 0:
-        timestep_minutes = 1.0
+    timestep_seconds = float(diffs_seconds.median())
+    if not np.isfinite(timestep_seconds) or timestep_seconds <= 0:
+        raise ValueError("Could not infer a positive VPP log timestep.")
+
+    if not np.allclose(diffs_seconds, timestep_seconds, rtol=0.0, atol=1e-6):
+        raise ValueError(
+            "VPP log timestamps are not regularly spaced. Delay scoring requires "
+            "a complete, regular time series."
+        )
+
+    timestep_minutes = timestep_seconds / 60.0
+    if timestep_minutes > MAX_TIMESTEP_MINUTES + 1e-9:
+        raise ValueError(
+            f"VPP log timestep is {timestep_minutes:g} minutes. C4 requires "
+            f"{MAX_TIMESTEP_MINUTES:g}-minute resolution or finer."
+        )
+
+    window_steps = SCORING_WINDOW_MINUTES / timestep_minutes
+    if not np.isclose(window_steps, round(window_steps), rtol=0.0, atol=1e-9):
+        raise ValueError(
+            f"The {timestep_minutes:g}-minute timestep does not divide evenly into "
+            f"the {SCORING_WINDOW_MINUTES:g}-minute scoring window."
+        )
+
+    duration_minutes = (df["Time"].iloc[-1] - df["Time"].iloc[0]).total_seconds() / 60.0
+    if duration_minutes < MIN_CONTIGUOUS_MINUTES:
+        raise ValueError(
+            f"VPP log spans only {duration_minutes:g} minutes. At least "
+            f"{MIN_CONTIGUOUS_MINUTES:g} contiguous minutes are required."
+        )
 
     return df, float(timestep_minutes)
+
+
+def _slope_correlation_score(pair, t_res):
+    """Return the documented low-variation slope fallback on a 0-to-1 scale."""
+    elapsed_minutes = np.arange(len(pair), dtype=float) * t_res
+    target_values = pair["target"].to_numpy(dtype=float)
+    actual_values = pair["actual"].to_numpy(dtype=float)
+
+    # Normalize both slopes to the target's kW scale so their difference is
+    # dimensionless and comparable between fleets of different sizes.
+    scale_kw = max(float(np.max(np.abs(target_values))), 1.0)
+    target_slope = np.polyfit(elapsed_minutes, target_values / scale_kw, 1)[0]
+    actual_slope = np.polyfit(elapsed_minutes, actual_values / scale_kw, 1)[0]
+    return float(np.clip(1.0 - abs(target_slope - actual_slope), 0.0, 1.0))
 
 
 def pjm_delay_corr(target, actual, timestamp, t_res):
@@ -120,36 +179,36 @@ def pjm_delay_corr(target, actual, timestamp, t_res):
     actual = actual.sort_index()
 
     window_end = pd.Timestamp(timestamp)
-    window_start = window_end - pd.Timedelta(minutes=5)
+    window_start = window_end - pd.Timedelta(minutes=SCORING_WINDOW_MINUTES)
 
-    # Includes both zero and five minutes. A one-minute B2 log therefore
-    # evaluates delays of 0, 1, 2, 3, 4, and 5 minutes.
-    delay_minutes = np.arange(0, 5 + t_res / 2, t_res)
-    minimum_samples = max(2, int(round(5 / t_res)) + 1)
+    delay_steps = int(round(SCORING_WINDOW_MINUTES / t_res))
+    delay_minutes = np.arange(delay_steps + 1, dtype=float) * t_res
+    minimum_samples = delay_steps + 1
+    window_actual = actual.loc[window_start:window_end].rename("actual")
 
     for delay_min in delay_minutes:
-        delay_steps = int(round(delay_min / t_res))
+        shifted_target = target.rename("target").copy()
+        shifted_target.index = shifted_target.index + pd.Timedelta(minutes=float(delay_min))
+        shifted_target = shifted_target.loc[window_start:window_end]
+        pair = pd.concat([shifted_target, window_actual], axis=1).dropna()
 
-        pair = pd.concat(
-            [
-                target.shift(delay_steps).rename("target"),
-                actual.rename("actual"),
-            ],
-            axis=1,
-        )
-
-        pair = pair.loc[window_start:window_end].dropna()
-
-        if (
-            len(pair) < minimum_samples
-            or pair["target"].std() == 0
-            or pair["actual"].std() == 0
-        ):
+        if len(pair) < minimum_samples:
             corr = np.nan
         else:
-            corr = pair["target"].corr(pair["actual"])
+            target_scale = max(float(pair["target"].abs().max()), 1.0)
+            flat_threshold = max(1e-9, target_scale * 1e-6)
+            if pair["target"].std() <= flat_threshold:
+                corr = _slope_correlation_score(pair, t_res)
+            elif pair["actual"].std() <= 1e-12:
+                # A varying request and constant response have no useful
+                # correlation and must not disappear from the average.
+                corr = 0.0
+            else:
+                corr = pair["target"].corr(pair["actual"])
 
-        delay_score = abs((delay_min - 5.0) / 5.0)
+        delay_score = abs(
+            (delay_min - SCORING_WINDOW_MINUTES) / SCORING_WINDOW_MINUTES
+        )
 
         if np.isfinite(corr):
             candidates.append(
@@ -172,59 +231,87 @@ def pjm_delay_corr(target, actual, timestamp, t_res):
     return max(candidates, key=lambda x: x["selection_score"])
 
 
-def pjm_precision(target, actual, reg_cap_kw):
-
-    reg_cap = np.mean(reg_cap_kw)
-
-    if not np.isfinite(reg_cap) or reg_cap <= 0:
-        return np.nan
-
+def pjm_precision(target, actual, up_reg_cap_kw, dwn_reg_cap_kw):
+    """Calculate direction-aware precision for the asymmetric HPWH fleet."""
     pair = pd.concat(
         [
             target.rename("target"),
             actual.rename("actual"),
+            up_reg_cap_kw.rename("up_capacity"),
+            dwn_reg_cap_kw.rename("down_capacity"),
         ],
         axis=1,
     ).dropna()
 
-    absolute_error = (pair["target"] - pair["actual"]).abs()
+    if pair.empty:
+        return np.nan
 
-    mean_absolute_error_kw = absolute_error.mean()
-
-    raw_precision_score = (
-        1.0
-        - mean_absolute_error_kw / reg_cap
+    # Positive target means increased HPWH load in B2. At a zero target, use
+    # the direction of any unintended response so that it is penalized against
+    # the capacity on the side where it occurred.
+    capacity = np.where(
+        pair["target"] > 0,
+        pair["up_capacity"],
+        np.where(
+            pair["target"] < 0,
+            pair["down_capacity"],
+            np.where(pair["actual"] >= 0, pair["up_capacity"], pair["down_capacity"]),
+        ),
     )
 
-    return np.clip(raw_precision_score, 0.0, 1.0)
+    if not np.isfinite(capacity).all() or (capacity <= 0).any():
+        return np.nan
+
+    normalized_error = (pair["target"] - pair["actual"]).abs().to_numpy() / capacity
+    return float(np.clip(1.0 - normalized_error.mean(), 0.0, 1.0))
 
 
 def main(run_id):
     vpp_path = find_vpp_log(run_id)
     df, t_res = load_vpp_data(vpp_path)
 
-    if t_res > 5:
-        raise ValueError(
-            f"VPP log timestep is {t_res:g} minutes. C4 requires a log at "
-            "five-minute resolution or finer; use B2's normal one-minute setting."
-        )
-
     delay_corr = []
-    target = df.set_index("Time")["Target Delta (kW)"]
-    actual = df.set_index("Time")["Actual HPWH Delta (kW)"]
+    indexed = df.set_index("Time")
+    target = indexed["Target Delta (kW)"]
+    actual = indexed["Actual HPWH Delta (kW)"]
     for timestamp in target.index:
         delay_corr.append(pjm_delay_corr(target, actual, timestamp, t_res))
 
-    delay_corr_df = pd.DataFrame(delay_corr)
-    avg_corr = delay_corr_df["corr_score"].mean()
-    avg_delay = delay_corr_df["delay_score"].mean()
+    delay_corr_df = pd.DataFrame(delay_corr, index=target.index)
+    hourly_scores = []
 
-    precision = pjm_precision(df["Target Delta (kW)"], df["Actual HPWH Delta (kW)"], df["Regulation Capacity (kW)"])
+    for _, hour_data in indexed.groupby(pd.Grouper(freq="h")):
+        if hour_data.empty:
+            continue
 
-    # print(precision)
-    return ((avg_corr / 3) + (avg_delay / 3) + (precision / 3))
+        hour_span = (hour_data.index[-1] - hour_data.index[0]).total_seconds() / 60.0
+        if hour_span < MIN_CONTIGUOUS_MINUTES:
+            continue
+
+        hour_delay_corr = delay_corr_df.loc[hour_data.index]
+        avg_corr = hour_delay_corr["corr_score"].mean()
+        avg_delay = hour_delay_corr["delay_score"].mean()
+        precision = pjm_precision(
+            hour_data["Target Delta (kW)"],
+            hour_data["Actual HPWH Delta (kW)"],
+            hour_data["Up Regulation Capacity (kW)"],
+            hour_data["Down Regulation Capacity (kW)"],
+        )
+
+        components = np.array([avg_corr, avg_delay, precision], dtype=float)
+        if np.isfinite(components).all():
+            hourly_scores.append(float(components.mean()))
+
+    if not hourly_scores:
+        raise ValueError(
+            "VPP log did not contain an hour with enough valid data to calculate all "
+            "three performance components."
+        )
+
+    return float(np.mean(hourly_scores))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-id", required=True)
-    main(parser.parse_args().run_id)
+    score = main(parser.parse_args().run_id)
+    print(f"PJM-style performance score: {score:.6f}")
