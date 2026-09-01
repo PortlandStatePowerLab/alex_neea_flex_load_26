@@ -1,7 +1,7 @@
 """
 Author: Thomas Metzler
 Created: 7/6/26
-Dispatches HPWH load and shed commands to track a normalized regulation signal.
+Runs the uncontrolled HPWH baseline fleet simulation.
 
 Modified by Alex Wardwell
 Modified on 8/19/26
@@ -197,7 +197,7 @@ DWN_REG_CAP = 5.0 #kW
 # Dispatch and comfort settings.  With a one-minute timestep, five minutes is
 # a conservative initial minimum command duration.  A home is always released
 # if the regulation request reverses direction or returns to zero.
-MIN_HOLD_MINUTES = 5
+MIN_HOLD_MINUTES = 4
 MIN_HOLD_STEPS = max(1, round(MIN_HOLD_MINUTES / t_res))
 CONTROL_INTERVAL_MINUTES = 1
 CONTROL_INTERVAL_STEPS = max(1, round(CONTROL_INTERVAL_MINUTES / t_res))
@@ -207,7 +207,7 @@ SHED_MIN_TANK_TEMP_F = 120
 LOAD_TARGET_TANK_TEMP_F = 130
 ACTIVE_POWER_THRESHOLD_KW = 0.1
 EXPECTED_ON_POWER_KW = 0.5
-FEEDBACK_GAIN = 0.3
+FEEDBACK_GAIN = 0.4
 TRACKING_DEADBAND_KW = 0.25
 MAX_RESPONSE_CHANGE_KW_PER_INTERVAL = 2
 
@@ -429,6 +429,39 @@ def _clean_power(value, default=0.0):
     except (TypeError, ValueError):
         return default
     return value if pd.notna(value) and value > 0 else default
+
+
+def estimate_baseline_regulation_capacity_kw(fleet_data):
+    """Return instantaneous upward-load and downward-shed capacity."""
+    available_up_kw = 0.0
+    available_down_kw = 0.0
+
+    for home in fleet_data:
+        current_kw = _clean_power(home.get("last_base_hpwh_kw"))
+        try:
+            tank_temp_c = float(home.get("last_tank_temp_c"))
+        except (TypeError, ValueError):
+            continue
+
+        if not isfinite(tank_temp_c):
+            continue
+
+        if (
+            current_kw <= ACTIVE_POWER_THRESHOLD_KW
+            and tank_temp_c <= LOAD_TARGET_TANK_TEMP_C
+        ):
+            available_up_kw += max(
+                0.0,
+                EXPECTED_ON_POWER_KW - current_kw,
+            )
+
+        if (
+            current_kw > ACTIVE_POWER_THRESHOLD_KW
+            and tank_temp_c >= SHED_MIN_TANK_TEMP_C
+        ):
+            available_down_kw += current_kw
+
+    return available_up_kw, available_down_kw
 
 
 def _estimated_incremental_load_kw(home):
@@ -844,30 +877,24 @@ def restore_time_column(df, result_name):
 
 
 def aggregate_results(homes, work_dir, run_id):
-    all_ctrl, all_base = [], []
+    all_base = []
     for home in homes:
         results_dir = os.path.join(home, "Results")
-        ctrl_file = os.path.join(results_dir, "hpwh_controlled.csv")
         base_file = os.path.join(results_dir, "hpwh_baseline.csv")
-        
-        if os.path.exists(ctrl_file):
-            df_ctrl = pd.read_csv(ctrl_file)
-            df_ctrl["Home"] = os.path.basename(home)
-            all_ctrl.append(df_ctrl)
 
         if os.path.exists(base_file):
             df_base = pd.read_csv(base_file)
             df_base["Home"] = os.path.basename(home)
             all_base.append(df_base)
 
-    if all_ctrl:
-        df_ctrl_all = pd.concat(all_ctrl, ignore_index=True)
-        df_ctrl_all.to_csv(os.path.join(work_dir, run_id + "_controlled.csv"), index=False)
+    if not all_base:
+        raise RuntimeError("No baseline CSVs were available for aggregation.")
 
-    if all_base:
-        df_base_all = pd.concat(all_base, ignore_index=True)
-        df_base_all.to_csv(os.path.join(work_dir, run_id + "_baseline.csv"), index=False)
-    print(f"Aggregated CSVs written!")
+    aggregate_path = os.path.join(work_dir, run_id + "_baseline.csv")
+    df_base_all = pd.concat(all_base, ignore_index=True)
+    df_base_all.to_csv(aggregate_path, index=False)
+    print("Aggregated baseline CSV written!", flush=True)
+    return aggregate_path
 
 #########################################
 # HPWH / HVAC CONTROL & INITIALIZATION
@@ -932,14 +959,13 @@ def initialize_home(home_path, weather_file_path):
     }
 
     base_dwelling = Dwelling(name=f"Base_{os.path.basename(home_path)}", **dwelling_args_local)
-    sim_dwelling = Dwelling(name=f"Ctrl_{os.path.basename(home_path)}", **dwelling_args_local)
-    return base_dwelling, sim_dwelling
+    return base_dwelling
 
 def init_fleet_worker(home, build_num, num_builds):
     """Worker function to initialize dwellings in parallel."""
 
     try:
-        base_dw, sim_dw = initialize_home(
+        base_dw = initialize_home(
             home,
             WEATHER_FILE
         )
@@ -947,18 +973,10 @@ def init_fleet_worker(home, build_num, num_builds):
         return {
             "success": True,
             "base": base_dw,
-            "sim": sim_dw,
             "path": home,
-            "override": "NORMAL",
-            "lockout_steps": 0,
-            "dispatch_count": 0,
-            "dispatch_kw": 0.0,
             "last_base_kw": 0.0,
-            "last_ctrl_kw": 0.0,
-            "last_hpwh_kw": 0.0,
             "last_tank_temp_c": TbaselineC,
             "last_base_hpwh_kw": 0.0,
-            "last_ctrl_hpwh_kw": 0.0,
         }
 
     except Exception as e:
@@ -970,7 +988,7 @@ def init_fleet_worker(home, build_num, num_builds):
 
       
 def update_home_worker(home_data):
-    """Advance one baseline/controlled dwelling pair by one timestep."""
+    """Advance one baseline dwelling by one timestep."""
 
     building_name = os.path.basename(home_data["path"])
 
@@ -984,9 +1002,6 @@ def update_home_worker(home_data):
         }
         base_metrics = home_data["base"].update(control_signal=base_ctrl)
 
-        control_cmd = determine_hpwh_control(global_mode=home_data["override"])
-        ctrl_metrics = home_data["sim"].update(control_signal=control_cmd)
-
         def get_metric(metrics, dwelling, name):
             if isinstance(metrics, dict) and name in metrics:
                 return metrics[name]
@@ -997,9 +1012,7 @@ def update_home_worker(home_data):
         return {
             "success": True,
             "base_kw": get_metric(base_metrics, home_data["base"], "Total Electric Power (kW)"),
-            "ctrl_kw": get_metric(ctrl_metrics, home_data["sim"], "Total Electric Power (kW)"),
-            "ctrl_hpwh_kw": get_metric(ctrl_metrics, home_data["sim"], "Water Heating Electric Power (kW)"),
-            "tank_temp_c": get_metric(ctrl_metrics, home_data["sim"], "Hot Water Average Temperature (C)"),
+            "tank_temp_c": get_metric(base_metrics, home_data["base"], "Hot Water Average Temperature (C)"),
             "base_hpwh_kw": get_metric(base_metrics, home_data["base"], "Water Heating Electric Power (kW)"),
         }
     except Exception as e:
@@ -1013,8 +1026,8 @@ def update_home_worker(home_data):
 # MAIN EXECUTION
 #########################################
 
-def main(parameters=None, run_id=None, reg_type="RegA"):
-    """Run the HPWH B2 fleet simulation using calculator parameters."""
+def main(parameters=None, run_id=None, reg_type=None):
+    """Run the HPWH B2 baseline fleet simulation."""
 
     effective_run_id = run_id or filename
 
@@ -1023,8 +1036,8 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
     # ============================================================
 
     configuration = configure(parameters)
-    signal_file = configure_regulation(reg_type)
-    # print(f"Regulation type: {REG_TYPE} ({signal_file})", flush=True)
+    # Retain reg_type temporarily for compatibility with the current launcher.
+    # Baseline B2 deliberately does not load or use a regulation signal.
 
     # ============================================================
     # 1. Directory Setup
@@ -1189,11 +1202,9 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
 
     sim_times = fleet_data[0]["base"].sim_times
 
-    average_power_kw = 0.0
-    previous_actual_delta_kw = 0.0
-    vpp_state_log = []
-
     total_steps = len(sim_times)
+    up_capacity_samples_kw = []
+    down_capacity_samples_kw = []
 
     # Report once per simulation hour.
     progress_interval = max(
@@ -1207,95 +1218,7 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
 
-        for step_index, sim_time in enumerate(sim_times, start=1):
-
-            # ----------------------------------------------------
-            # Get regulation signal
-            # ----------------------------------------------------
-
-            raw_reg_sig = get_reg_sig(sim_time)
-
-            # ----------------------------------------------------
-            # Dispatch regulation
-            # ----------------------------------------------------
-
-            if (step_index - 1) % CONTROL_INTERVAL_STEPS == 0:
-                dispatch_state = dispatch_regulation_signal(
-                    fleet_data,
-                    raw_reg_sig,
-                    previous_actual_delta_kw,
-                )
-
-            else:
-                reg_sig = _normalise_reg_signal(raw_reg_sig)
-                if reg_sig > 0:
-                    target_delta_kw = reg_sig * UP_REG_CAP
-                elif reg_sig < 0:
-                    target_delta_kw = reg_sig * DWN_REG_CAP
-                else:
-                    target_delta_kw = (
-                        reg_sig * COMMITTED_REGULATION_CAPACITY_KW
-                    )
-                available_up_kw, available_down_kw = (
-                    _available_adjustment_capacity_kw(fleet_data)
-                )
-                capacity_limited_target_kw = min(
-                    max(
-                        target_delta_kw,
-                        previous_actual_delta_kw - available_down_kw,
-                    ),
-                    previous_actual_delta_kw + available_up_kw,
-                )
-                requested_mode = (
-                    "LOAD" if target_delta_kw > 0
-                    else "SHED" if target_delta_kw < 0
-                    else "NORMAL"
-                )
-                dispatch_state = {
-                    "reg_sig": reg_sig,
-                    "target_delta_kw": target_delta_kw,
-                    "capacity_limited_target_kw": capacity_limited_target_kw,
-                    "previous_actual_delta_kw": previous_actual_delta_kw,
-                    "feedback_error_kw": (
-                        capacity_limited_target_kw
-                        - previous_actual_delta_kw
-                    ),
-                    "requested_adjustment_kw": 0.0,
-                    "applied_adjustment_kw": 0.0,
-                    "available_up_kw": available_up_kw,
-                    "available_down_kw": available_down_kw,
-                    "available_requested_kw": (
-                        available_up_kw
-                        if target_delta_kw >= previous_actual_delta_kw
-                        else available_down_kw
-                    ),
-                    "estimated_dispatch_kw": (
-                        _current_estimated_dispatch_kw(fleet_data)
-                    ),
-                    "dispatched_units": sum(
-                        home.get("override") == requested_mode
-                        for home in fleet_data
-                    ) if requested_mode != "NORMAL" else 0,
-                    "retained_kw": sum(
-                        _clean_power(home.get("dispatch_kw"))
-                        for home in fleet_data
-                        if (
-                            home.get("override") in {"LOAD", "SHED"}
-                            and home.get("lockout_steps", 0) > 0
-                        )
-                    ),
-                    "controller_saturated": (
-                        abs(capacity_limited_target_kw - target_delta_kw)
-                        > TRACKING_DEADBAND_KW
-                    ),
-                    "added_load": 0,
-                    "released_load": 0,
-                    "added_shed": 0,
-                    "released_shed": 0,
-                }
-
-            reg_sig = dispatch_state["reg_sig"]
-            target_delta_kw = dispatch_state["target_delta_kw"]
+        for step_index, _ in enumerate(sim_times, start=1):
 
             # ----------------------------------------------------
             # Advance every active dwelling
@@ -1332,24 +1255,12 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
                     result["base_kw"]
                 )
 
-                home["last_ctrl_kw"] = _clean_power(
-                    result["ctrl_kw"]
-                )
-
-                home["last_hpwh_kw"] = _clean_power(
-                    result["ctrl_hpwh_kw"]
-                )
-
                 home["last_tank_temp_c"] = (
                     result["tank_temp_c"]
                 )
 
                 home["last_base_hpwh_kw"] = _clean_power(
                     result["base_hpwh_kw"]
-                )
-
-                home["last_ctrl_hpwh_kw"] = _clean_power(
-                    result["ctrl_hpwh_kw"]
                 )
 
                 successful_homes.append(home)
@@ -1374,154 +1285,11 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
                     "All buildings failed during the simulation."
                 )
 
-            # Update current active fleet size.
-            num_homes = len(fleet_data)
-
-            # ----------------------------------------------------
-            # Calculate fleet results
-            # ----------------------------------------------------
-
-            baseline_hpwh_fleet_kw = sum(
-                h["last_base_hpwh_kw"]
-                for h in fleet_data
+            available_up_kw, available_down_kw = (
+                estimate_baseline_regulation_capacity_kw(fleet_data)
             )
-
-            controlled_hpwh_fleet_kw = sum(
-                h["last_ctrl_hpwh_kw"]
-                for h in fleet_data
-            )
-
-            hpwh_actual_delta_kw = (
-                controlled_hpwh_fleet_kw
-                - baseline_hpwh_fleet_kw
-            )
-
-            current_step_aggregate_power = sum(
-                home["last_ctrl_kw"]
-                for home in fleet_data
-            )
-
-            tracking_error_kw = (
-                target_delta_kw
-                - hpwh_actual_delta_kw
-            )
-            previous_actual_delta_kw = hpwh_actual_delta_kw
-
-            aggregate_power_kw = (
-                current_step_aggregate_power
-            )
-
-            average_power_kw = (
-                aggregate_power_kw / num_homes
-            )
-
-            # ----------------------------------------------------
-            # Fleet state counts
-            # ----------------------------------------------------
-
-            shed_count = sum(
-                1
-                for h in fleet_data
-                if h["override"] == "SHED"
-            )
-
-            load_count = sum(
-                1
-                for h in fleet_data
-                if h["override"] == "LOAD"
-            )
-
-            normal_count = sum(
-                1
-                for h in fleet_data
-                if h["override"] == "NORMAL"
-            )
-
-            # ----------------------------------------------------
-            # Save VPP state
-            # ----------------------------------------------------
-
-            vpp_state_log.append({
-                "Time": sim_time,
-                "Regulation Signal": reg_sig,
-                "Up Regulation Capacity (kW)":
-                    UP_REG_CAP,
-                "Down Regulation Capacity (kW)":
-                    DWN_REG_CAP,
-                "Available Up Capacity (kW)":
-                    dispatch_state["available_up_kw"],
-                "Available Down Capacity (kW)":
-                    dispatch_state["available_down_kw"],
-                "Committed Regulation Capacity (kW)": COMMITTED_REGULATION_CAPACITY_KW,
-                "Target Before Capacity Limit (kW)":
-                    dispatch_state["target_delta_kw"],
-                "Capacity-Limited Target (kW)":
-                    dispatch_state["capacity_limited_target_kw"],
-                "Target Delta (kW)": target_delta_kw,
-                "Actual Delta (kW)": hpwh_actual_delta_kw,
-                "Tracking Error (kW)": tracking_error_kw,
-                "Previous Actual Delta (kW)":
-                    dispatch_state["previous_actual_delta_kw"],
-                "Feedback Error (kW)":
-                    dispatch_state["feedback_error_kw"],
-                "Requested Adjustment (kW)":
-                    dispatch_state["requested_adjustment_kw"],
-                "Applied Adjustment (kW)":
-                    dispatch_state["applied_adjustment_kw"],
-                "Controller Saturated":
-                    dispatch_state["controller_saturated"],
-
-                "Available Capacity in Requested Direction (kW)":
-                    dispatch_state["available_requested_kw"],
-
-                "Estimated Dispatched Capacity (kW)":
-                    dispatch_state["estimated_dispatch_kw"],
-
-                "Retained Capacity (kW)":
-                    dispatch_state["retained_kw"],
-
-                "Requested Dispatch Units":
-                    dispatch_state["dispatched_units"],
-
-                "Units Added to LOAD":
-                    dispatch_state["added_load"],
-                "Units Released from LOAD":
-                    dispatch_state["released_load"],
-                "Units Added to SHED":
-                    dispatch_state["added_shed"],
-                "Units Released from SHED":
-                    dispatch_state["released_shed"],
-
-                "Actual Average Power (kW)":
-                    average_power_kw,
-
-                "Aggregate Power (kW)":
-                    aggregate_power_kw,
-
-                "Units in NORMAL":
-                    normal_count,
-
-                "Units in SHED":
-                    shed_count,
-
-                "Units in LOAD":
-                    load_count,
-
-                "Baseline HPWH Fleet Power (kW)":
-                    baseline_hpwh_fleet_kw,
-
-                "Controlled HPWH Fleet Power (kW)":
-                    controlled_hpwh_fleet_kw,
-
-                "Actual HPWH Delta (kW)":
-                    hpwh_actual_delta_kw,
-
-                "Average Tank Temperature (C)":
-                    sum(
-                        h["last_tank_temp_c"]
-                        for h in fleet_data
-                    ) / num_homes,
-            })
+            up_capacity_samples_kw.append(available_up_kw)
+            down_capacity_samples_kw.append(available_down_kw)
 
             # ----------------------------------------------------
             # Progress message
@@ -1536,11 +1304,23 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
                     flush=True,
                 )
 
+    if not up_capacity_samples_kw or not down_capacity_samples_kw:
+        raise RuntimeError(
+            "No regulation-capacity samples were produced by the baseline run."
+        )
+
+    up_capacity_p90_kw = float(
+        pd.Series(up_capacity_samples_kw, dtype=float).quantile(0.90)
+    )
+    down_capacity_p90_kw = float(
+        pd.Series(down_capacity_samples_kw, dtype=float).quantile(0.90)
+    )
+
     # ============================================================
     # 5. Finalize Individual Building Results
     # ============================================================
 
-    CTRL_COLS = [
+    RESULT_COLS = [
         "Time",
         "Total Electric Power (kW)",
         "Total Electric Energy (kWh)",
@@ -1579,18 +1359,9 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
                 home_data["base"].finalize()
             )
 
-            df_ctrl, _, _ = (
-                home_data["sim"].finalize()
-            )
-
             df_base = restore_time_column(
                 df_base,
                 f"{building_name} baseline"
-            )
-
-            df_ctrl = restore_time_column(
-                df_ctrl,
-                f"{building_name} controlled"
             )
 
             # df_base = remove_first_day(
@@ -1598,34 +1369,13 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
             #     Start
             # )
 
-            # df_ctrl = remove_first_day(
-            #     df_ctrl,
-            #     Start
-            # )
-
-            df_ctrl = df_ctrl[
-                [
-                    c
-                    for c in CTRL_COLS
-                    if c in df_ctrl.columns
-                ]
-            ]
-
             df_base = df_base[
                 [
                     c
-                    for c in CTRL_COLS
+                    for c in RESULT_COLS
                     if c in df_base.columns
                 ]
             ]
-
-            df_ctrl.to_csv(
-                os.path.join(
-                    results_dir,
-                    "hpwh_controlled.csv"
-                ),
-                index=False
-            )
 
             df_base.to_csv(
                 os.path.join(
@@ -1682,32 +1432,14 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
     # 7. Aggregate Successful Results
     # ============================================================
 
-    aggregate_results(
+    baseline_path = aggregate_results(
         successful_finalizations,
         RESULTS_DIR,
         effective_run_id
     )
 
     # ============================================================
-    # 8. Export VPP State Log
-    # ============================================================
-
-    df_vpp_log = pd.DataFrame(
-        vpp_state_log
-    )
-
-    vpp_log_path = os.path.join(
-        RESULTS_DIR,
-        effective_run_id + "_VPP_Fleet_States.csv"
-    )
-
-    df_vpp_log.to_csv(
-        vpp_log_path,
-        index=False
-    )
-
-    # ============================================================
-    # 9. Final Message
+    # 8. Final Message
     # ============================================================
 
     return {
@@ -1715,7 +1447,9 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
         "homes_simulated": len(successful_finalizations),
         "homes_failed": failed_count,
         "run_id": effective_run_id,
-        "vpp_log_path": vpp_log_path,
+        "baseline_path": baseline_path,
+        "up_regulation_capacity_p90_kw": up_capacity_p90_kw,
+        "down_regulation_capacity_p90_kw": down_capacity_p90_kw,
     }
 
 if __name__ == "__main__":

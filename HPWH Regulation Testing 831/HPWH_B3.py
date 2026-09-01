@@ -1,7 +1,7 @@
 """
 Author: Thomas Metzler
 Created: 7/6/26
-Dispatches HPWH load and shed commands to track a normalized regulation signal.
+Runs the controlled HPWH fleet against a saved B2 baseline.
 
 Modified by Alex Wardwell
 Modified on 8/19/26
@@ -181,18 +181,7 @@ t_res = 1.0  # minutes
 
 # NUM_HOMES = 10
 
-# The regulation signal is normalized to [-1, 1].  It is converted to a kW
-# request using COMMITTED_REGULATION_CAPACITY_KW:
-#   +1.0 -> increase fleet load by the committed capacity
-#   -1.0 -> reduce fleet load by the committed capacity
-#    0.0 -> return to the normal thermostat
-#
-# Set this no higher than the reliably available HPWH flexibility in the fleet.
-# The controller logs availability so this value can be calibrated after a run.
-COMMITTED_REGULATION_CAPACITY_KW = 0.5096
-
-UP_REG_CAP = 5.0 #kW
-DWN_REG_CAP = 5.0 #kW
+# B3 receives its directional regulation capacities from B2's baseline run.
 
 # Dispatch and comfort settings.  With a one-minute timestep, five minutes is
 # a conservative initial minimum command duration.  A home is always released
@@ -207,7 +196,7 @@ SHED_MIN_TANK_TEMP_F = 120
 LOAD_TARGET_TANK_TEMP_F = 130
 ACTIVE_POWER_THRESHOLD_KW = 0.1
 EXPECTED_ON_POWER_KW = 0.5
-FEEDBACK_GAIN = 0.3
+FEEDBACK_GAIN = 0.2
 TRACKING_DEADBAND_KW = 0.25
 MAX_RESPONSE_CHANGE_KW_PER_INTERVAL = 2
 
@@ -230,6 +219,18 @@ def _positive_number(name, value):
         raise ValueError(f"{name} must be numeric; received {value!r}.") from exc
     if not isfinite(numeric_value) or numeric_value <= 0:
         raise ValueError(f"{name} must be finite and greater than zero; received {value!r}.")
+    return numeric_value
+
+
+def _nonnegative_number(name, value):
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be numeric; received {value!r}.") from exc
+    if not isfinite(numeric_value) or numeric_value < 0:
+        raise ValueError(
+            f"{name} must be finite and non-negative; received {value!r}."
+        )
     return numeric_value
 
 
@@ -586,15 +587,21 @@ def _apply_actions(candidates, action, requested_change_kw):
     return applied_magnitude_kw, changed_count
 
 
-def dispatch_regulation_signal(fleet_data, reg_sig, previous_actual_delta_kw):
+def dispatch_regulation_signal(
+    fleet_data,
+    reg_sig,
+    previous_actual_delta_kw,
+    up_cap,
+    dwn_cap,
+):
     """Adjust persistent HPWH commands using signed fleet-response feedback."""
     reg_sig = _normalise_reg_signal(reg_sig)
     if reg_sig > 0:
-        target_delta_kw = reg_sig * UP_REG_CAP
+        target_delta_kw = reg_sig * up_cap
     elif reg_sig < 0:
-        target_delta_kw = reg_sig * DWN_REG_CAP
+        target_delta_kw = reg_sig * dwn_cap
     else:
-        target_delta_kw = reg_sig * COMMITTED_REGULATION_CAPACITY_KW
+        target_delta_kw = 0.0
 
     for home in fleet_data:
         home["changed_this_interval"] = False
@@ -843,31 +850,89 @@ def restore_time_column(df, result_name):
     return df.rename_axis("Time").reset_index()
 
 
+def load_baseline_profiles(baseline_path):
+    """Load run-specific B2 HPWH power profiles keyed by home name."""
+    if not os.path.isfile(baseline_path):
+        raise FileNotFoundError(
+            f"Baseline aggregate not found: {baseline_path}. Run B2 first "
+            "with the same run_id."
+        )
+
+    required_columns = {
+        "Time",
+        "Home",
+        "Water Heating Electric Power (kW)",
+    }
+    available_columns = pd.read_csv(baseline_path, nrows=0).columns
+    missing_columns = required_columns.difference(available_columns)
+    if missing_columns:
+        raise ValueError(
+            f"Baseline aggregate is missing required columns: "
+            f"{sorted(missing_columns)}"
+        )
+
+    baseline_data = pd.read_csv(
+        baseline_path,
+        usecols=list(required_columns),
+    )
+
+    baseline_data["Time"] = pd.to_datetime(
+        baseline_data["Time"],
+        errors="raise",
+    )
+    baseline_data["Water Heating Electric Power (kW)"] = pd.to_numeric(
+        baseline_data["Water Heating Electric Power (kW)"],
+        errors="raise",
+    )
+    baseline_power = baseline_data["Water Heating Electric Power (kW)"]
+    if not baseline_power.map(isfinite).all():
+        raise ValueError(
+            "Baseline aggregate contains non-finite HPWH power values."
+        )
+
+    duplicate_rows = baseline_data.duplicated(subset=["Home", "Time"])
+    if duplicate_rows.any():
+        duplicate_count = int(duplicate_rows.sum())
+        raise ValueError(
+            f"Baseline aggregate contains {duplicate_count} duplicate "
+            "Home/Time rows."
+        )
+
+    profiles = {}
+    for home_name, home_data in baseline_data.groupby("Home", sort=False):
+        home_data = home_data.sort_values("Time")
+        profiles[str(home_name)] = pd.Series(
+            home_data["Water Heating Electric Power (kW)"].to_numpy(
+                dtype=float
+            ),
+            index=pd.DatetimeIndex(home_data["Time"]),
+        )
+
+    if not profiles:
+        raise ValueError("Baseline aggregate contains no home profiles.")
+
+    return profiles
+
+
 def aggregate_results(homes, work_dir, run_id):
-    all_ctrl, all_base = [], []
+    all_ctrl = []
     for home in homes:
         results_dir = os.path.join(home, "Results")
         ctrl_file = os.path.join(results_dir, "hpwh_controlled.csv")
-        base_file = os.path.join(results_dir, "hpwh_baseline.csv")
-        
+
         if os.path.exists(ctrl_file):
             df_ctrl = pd.read_csv(ctrl_file)
             df_ctrl["Home"] = os.path.basename(home)
             all_ctrl.append(df_ctrl)
 
-        if os.path.exists(base_file):
-            df_base = pd.read_csv(base_file)
-            df_base["Home"] = os.path.basename(home)
-            all_base.append(df_base)
+    if not all_ctrl:
+        raise RuntimeError("No controlled CSVs were available for aggregation.")
 
-    if all_ctrl:
-        df_ctrl_all = pd.concat(all_ctrl, ignore_index=True)
-        df_ctrl_all.to_csv(os.path.join(work_dir, run_id + "_controlled.csv"), index=False)
-
-    if all_base:
-        df_base_all = pd.concat(all_base, ignore_index=True)
-        df_base_all.to_csv(os.path.join(work_dir, run_id + "_baseline.csv"), index=False)
-    print(f"Aggregated CSVs written!")
+    aggregate_path = os.path.join(work_dir, run_id + "_controlled.csv")
+    df_ctrl_all = pd.concat(all_ctrl, ignore_index=True)
+    df_ctrl_all.to_csv(aggregate_path, index=False)
+    print("Aggregated controlled CSV written!", flush=True)
+    return aggregate_path
 
 #########################################
 # HPWH / HVAC CONTROL & INITIALIZATION
@@ -931,29 +996,34 @@ def initialize_home(home_path, weather_file_path):
         },
     }
 
-    base_dwelling = Dwelling(name=f"Base_{os.path.basename(home_path)}", **dwelling_args_local)
     sim_dwelling = Dwelling(name=f"Ctrl_{os.path.basename(home_path)}", **dwelling_args_local)
-    return base_dwelling, sim_dwelling
+    return sim_dwelling
 
-def init_fleet_worker(home, build_num, num_builds):
-    """Worker function to initialize dwellings in parallel."""
+def init_fleet_worker(home, build_num, num_builds, baseline_profile):
+    """Initialize one controlled dwelling and align its B2 baseline profile."""
 
     try:
-        base_dw, sim_dw = initialize_home(
+        sim_dw = initialize_home(
             home,
             WEATHER_FILE
         )
 
+        sim_times = pd.DatetimeIndex(sim_dw.sim_times)
+        if not sim_times.equals(baseline_profile.index):
+            raise ValueError(
+                f"Controlled simulation times do not match the B2 baseline "
+                f"for {os.path.basename(home)}."
+            )
+
         return {
             "success": True,
-            "base": base_dw,
             "sim": sim_dw,
             "path": home,
+            "baseline_hpwh_kw": baseline_profile.to_numpy(dtype=float),
             "override": "NORMAL",
             "lockout_steps": 0,
             "dispatch_count": 0,
             "dispatch_kw": 0.0,
-            "last_base_kw": 0.0,
             "last_ctrl_kw": 0.0,
             "last_hpwh_kw": 0.0,
             "last_tank_temp_c": TbaselineC,
@@ -970,20 +1040,11 @@ def init_fleet_worker(home, build_num, num_builds):
 
       
 def update_home_worker(home_data):
-    """Advance one baseline/controlled dwelling pair by one timestep."""
+    """Advance one controlled dwelling by one timestep."""
 
     building_name = os.path.basename(home_data["path"])
 
     try:
-        base_ctrl = {
-            "Water Heating": {
-                "Setpoint": TbaselineC,
-                "Deadband": TdeadbandC,
-                "Load Fraction": 1,
-            }
-        }
-        base_metrics = home_data["base"].update(control_signal=base_ctrl)
-
         control_cmd = determine_hpwh_control(global_mode=home_data["override"])
         ctrl_metrics = home_data["sim"].update(control_signal=control_cmd)
 
@@ -996,11 +1057,9 @@ def update_home_worker(home_data):
 
         return {
             "success": True,
-            "base_kw": get_metric(base_metrics, home_data["base"], "Total Electric Power (kW)"),
             "ctrl_kw": get_metric(ctrl_metrics, home_data["sim"], "Total Electric Power (kW)"),
             "ctrl_hpwh_kw": get_metric(ctrl_metrics, home_data["sim"], "Water Heating Electric Power (kW)"),
             "tank_temp_c": get_metric(ctrl_metrics, home_data["sim"], "Hot Water Average Temperature (C)"),
-            "base_hpwh_kw": get_metric(base_metrics, home_data["base"], "Water Heating Electric Power (kW)"),
         }
     except Exception as e:
         return {
@@ -1013,8 +1072,8 @@ def update_home_worker(home_data):
 # MAIN EXECUTION
 #########################################
 
-def main(parameters=None, run_id=None, reg_type="RegA"):
-    """Run the HPWH B2 fleet simulation using calculator parameters."""
+def main(parameters=None, run_id=None, reg_type="RegA", up_cap=None, dwn_cap=None):
+    """Run the controlled HPWH fleet against the matching B2 baseline."""
 
     effective_run_id = run_id or filename
 
@@ -1024,6 +1083,18 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
 
     configuration = configure(parameters)
     signal_file = configure_regulation(reg_type)
+    if up_cap is None or dwn_cap is None:
+        raise ValueError(
+            "B3 requires up_cap and dwn_cap from the matching B2 baseline run."
+        )
+    up_cap = _nonnegative_number("up_cap", up_cap)
+    dwn_cap = _nonnegative_number("dwn_cap", dwn_cap)
+    committed_capacity_kw = min(up_cap, dwn_cap)
+    print(
+        f"Using B2 regulation capacities: up={up_cap:.3f} kW, "
+        f"down={dwn_cap:.3f} kW",
+        flush=True,
+    )
     # print(f"Regulation type: {REG_TYPE} ({signal_file})", flush=True)
 
     # ============================================================
@@ -1045,12 +1116,35 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
             f"Metadata directory not found: {METADATA_DIR}"
         )
 
-    homes = find_all_homes(INPUT_DIR)
+    baseline_path = os.path.join(
+        RESULTS_DIR,
+        effective_run_id + "_baseline.csv",
+    )
+    baseline_profiles = load_baseline_profiles(baseline_path)
+
+    all_homes = find_all_homes(INPUT_DIR)
     # homes = homes[:NUM_HOMES]
+
+    if not all_homes:
+        raise RuntimeError(
+            f"No valid homes found in {INPUT_DIR}."
+        )
+
+    homes = [
+        home
+        for home in all_homes
+        if os.path.basename(home) in baseline_profiles
+    ]
+    missing_baselines = len(all_homes) - len(homes)
+    if missing_baselines:
+        print(
+            f"Skipping {missing_baselines} homes with no B2 baseline data.",
+            flush=True,
+        )
 
     if not homes:
         raise RuntimeError(
-            f"No valid homes found in {INPUT_DIR}."
+            "None of the input homes have matching B2 baseline data."
         )
 
     print(f"Found {len(homes)} homes.", flush=True)
@@ -1077,7 +1171,8 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
                 init_fleet_worker,
                 home,
                 i,
-                initial_home_count
+                initial_home_count,
+                baseline_profiles[os.path.basename(home)],
             )
             for i, home in enumerate(homes, start=1)
         ]
@@ -1187,7 +1282,7 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
     # 3. Co-Simulation Setup
     # ============================================================
 
-    sim_times = fleet_data[0]["base"].sim_times
+    sim_times = fleet_data[0]["sim"].sim_times
 
     average_power_kw = 0.0
     previous_actual_delta_kw = 0.0
@@ -1224,18 +1319,18 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
                     fleet_data,
                     raw_reg_sig,
                     previous_actual_delta_kw,
+                    up_cap,
+                    dwn_cap
                 )
 
             else:
                 reg_sig = _normalise_reg_signal(raw_reg_sig)
                 if reg_sig > 0:
-                    target_delta_kw = reg_sig * UP_REG_CAP
+                    target_delta_kw = reg_sig * up_cap
                 elif reg_sig < 0:
-                    target_delta_kw = reg_sig * DWN_REG_CAP
+                    target_delta_kw = reg_sig * dwn_cap
                 else:
-                    target_delta_kw = (
-                        reg_sig * COMMITTED_REGULATION_CAPACITY_KW
-                    )
+                    target_delta_kw = 0.0
                 available_up_kw, available_down_kw = (
                     _available_adjustment_capacity_kw(fleet_data)
                 )
@@ -1328,10 +1423,6 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
                     continue
 
                 # Update state for successful home.
-                home["last_base_kw"] = _clean_power(
-                    result["base_kw"]
-                )
-
                 home["last_ctrl_kw"] = _clean_power(
                     result["ctrl_kw"]
                 )
@@ -1345,7 +1436,7 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
                 )
 
                 home["last_base_hpwh_kw"] = _clean_power(
-                    result["base_hpwh_kw"]
+                    home["baseline_hpwh_kw"][step_index - 1]
                 )
 
                 home["last_ctrl_hpwh_kw"] = _clean_power(
@@ -1445,14 +1536,14 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
                 "Time": sim_time,
                 "Regulation Signal": reg_sig,
                 "Up Regulation Capacity (kW)":
-                    UP_REG_CAP,
+                    up_cap,
                 "Down Regulation Capacity (kW)":
-                    DWN_REG_CAP,
+                    dwn_cap,
                 "Available Up Capacity (kW)":
                     dispatch_state["available_up_kw"],
                 "Available Down Capacity (kW)":
                     dispatch_state["available_down_kw"],
-                "Committed Regulation Capacity (kW)": COMMITTED_REGULATION_CAPACITY_KW,
+                "Committed Regulation Capacity (kW)": committed_capacity_kw,
                 "Target Before Capacity Limit (kW)":
                     dispatch_state["target_delta_kw"],
                 "Capacity-Limited Target (kW)":
@@ -1575,28 +1666,14 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
                 exist_ok=True
             )
 
-            df_base, _, _ = (
-                home_data["base"].finalize()
-            )
-
             df_ctrl, _, _ = (
                 home_data["sim"].finalize()
-            )
-
-            df_base = restore_time_column(
-                df_base,
-                f"{building_name} baseline"
             )
 
             df_ctrl = restore_time_column(
                 df_ctrl,
                 f"{building_name} controlled"
             )
-
-            # df_base = remove_first_day(
-            #     df_base,
-            #     Start
-            # )
 
             # df_ctrl = remove_first_day(
             #     df_ctrl,
@@ -1611,26 +1688,10 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
                 ]
             ]
 
-            df_base = df_base[
-                [
-                    c
-                    for c in CTRL_COLS
-                    if c in df_base.columns
-                ]
-            ]
-
             df_ctrl.to_csv(
                 os.path.join(
                     results_dir,
                     "hpwh_controlled.csv"
-                ),
-                index=False
-            )
-
-            df_base.to_csv(
-                os.path.join(
-                    results_dir,
-                    "hpwh_baseline.csv"
                 ),
                 index=False
             )
@@ -1682,7 +1743,7 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
     # 7. Aggregate Successful Results
     # ============================================================
 
-    aggregate_results(
+    controlled_path = aggregate_results(
         successful_finalizations,
         RESULTS_DIR,
         effective_run_id
@@ -1715,6 +1776,10 @@ def main(parameters=None, run_id=None, reg_type="RegA"):
         "homes_simulated": len(successful_finalizations),
         "homes_failed": failed_count,
         "run_id": effective_run_id,
+        "up_regulation_capacity_kw": up_cap,
+        "down_regulation_capacity_kw": dwn_cap,
+        "baseline_path": baseline_path,
+        "controlled_path": controlled_path,
         "vpp_log_path": vpp_log_path,
     }
 

@@ -33,14 +33,25 @@ def main(del_bldg="N", reg_type="RegA"):
     # Choose the run ID once. RegA/RegD suffixes keep the two result sets apart.
     base_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    import HPWH_B2 as run_ochre
+    import HPWH_B2 as run_ochre_base
+    import HPWH_B3 as run_ochre_cntrl
     import HPWH_A3 as adj_xml
     all_pdx_path = Path(os.path.join(base_dir, "HPWH All Portland Input Files"))
     if not all_pdx_path.is_dir():
         adj_xml.main()
     regulation_label = {"RegA": "Slow", "RegD": "Fast"}[reg_type]
     run_id = f"{base_run_id}_{regulation_label}"
-    run_ochre.main(run_id=run_id, reg_type=reg_type)
+    base_result = run_ochre_base.main(run_id=run_id, reg_type=reg_type)
+
+    up_cap = base_result["up_regulation_capacity_p90_kw"]
+    dwn_cap = base_result["down_regulation_capacity_p90_kw"]
+
+    run_ochre_cntrl.main(
+        run_id=run_id,
+        reg_type=reg_type,
+        up_cap=up_cap,
+        dwn_cap=dwn_cap,
+    )
     subprocess.run([sys.executable, str(base_dir / "HPWH_C1.py"), "--run-id", run_id], check=True)
     # subprocess.run([sys.executable, str(project_dir / "HPWH" / "HPWH_C2.py"), "--run-id", run_id], check=True)
     subprocess.run([sys.executable, str(base_dir / "HPWH_C3.py"), "--run-id", run_id], check=True)
