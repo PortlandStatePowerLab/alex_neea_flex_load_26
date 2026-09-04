@@ -211,6 +211,11 @@ FEEDBACK_GAIN = 0.4
 TRACKING_DEADBAND_KW = 0.25
 MAX_RESPONSE_CHANGE_KW_PER_INTERVAL = 2
 
+# Commit only capacity that was available for most of the baseline run.  A
+# 10th-percentile availability is met or exceeded for roughly 90% of samples;
+# the former 90th percentile was an optimistic peak-like value.
+RELIABLE_CAPACITY_QUANTILE = 0.10
+
 
 # HPWH control parameters (°F)
 Tcontrol_SHEDF = 126
@@ -1309,11 +1314,15 @@ def main(parameters=None, run_id=None, reg_type=None):
             "No regulation-capacity samples were produced by the baseline run."
         )
 
-    up_capacity_p90_kw = float(
-        pd.Series(up_capacity_samples_kw, dtype=float).quantile(0.90)
+    up_reliable_capacity_kw = float(
+        pd.Series(up_capacity_samples_kw, dtype=float).quantile(
+            RELIABLE_CAPACITY_QUANTILE
+        )
     )
-    down_capacity_p90_kw = float(
-        pd.Series(down_capacity_samples_kw, dtype=float).quantile(0.90)
+    down_reliable_capacity_kw = float(
+        pd.Series(down_capacity_samples_kw, dtype=float).quantile(
+            RELIABLE_CAPACITY_QUANTILE
+        )
     )
 
     # ============================================================
@@ -1448,8 +1457,9 @@ def main(parameters=None, run_id=None, reg_type=None):
         "homes_failed": failed_count,
         "run_id": effective_run_id,
         "baseline_path": baseline_path,
-        "up_regulation_capacity_p90_kw": up_capacity_p90_kw,
-        "down_regulation_capacity_p90_kw": down_capacity_p90_kw,
+        "capacity_availability_quantile": RELIABLE_CAPACITY_QUANTILE,
+        "up_regulation_capacity_kw": up_reliable_capacity_kw,
+        "down_regulation_capacity_kw": down_reliable_capacity_kw,
     }
 
 if __name__ == "__main__":

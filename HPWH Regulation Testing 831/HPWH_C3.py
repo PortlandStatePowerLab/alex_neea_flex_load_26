@@ -3,7 +3,7 @@ Author: Alex Wardwell
 Created: 8/12/26
 
 Plot requested and actual HPWH regulation response on one normalized axis.
-Run HPWH_B2_EnergySched_LoadShaping.py first. C3 reads B2's fleet-state
+Run the B2 baseline and B3 controlled simulations first. C3 reads B3's fleet-state
 log and divides the actual controlled-minus-baseline fleet power by the
 recorded static regulation capacity. Thus, for example, 15 kW of response
 against 20 kW of capacity is plotted as 0.75.
@@ -21,7 +21,7 @@ import pandas as pd
 
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-PLOT_POINTS = 100
+PLOT_POINTS = 1440
 
 
 def load_normalized_response(vpp_log_file):
@@ -88,7 +88,7 @@ def main(run_id):
     if not os.path.isfile(vpp_log_file):
         raise FileNotFoundError(
             f"Missing C3 input file: {vpp_log_file}\n"
-            "Run HPWH_B2 with the same run ID before C3."
+            "Run HPWH_B2 and HPWH_B3 with the same run ID before C3."
         )
 
     response = load_normalized_response(vpp_log_file).tail(PLOT_POINTS)

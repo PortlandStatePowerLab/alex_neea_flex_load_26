@@ -279,6 +279,7 @@ def main(run_id):
 
     delay_corr_df = pd.DataFrame(delay_corr, index=target.index)
     hourly_scores = []
+    hourly_components = []
 
     for _, hour_data in indexed.groupby(pd.Grouper(freq="h")):
         if hour_data.empty:
@@ -301,12 +302,22 @@ def main(run_id):
         components = np.array([avg_corr, avg_delay, precision], dtype=float)
         if np.isfinite(components).all():
             hourly_scores.append(float(components.mean()))
+            hourly_components.append(components)
 
     if not hourly_scores:
         raise ValueError(
             "VPP log did not contain an hour with enough valid data to calculate all "
             "three performance components."
         )
+
+    mean_components = np.mean(np.vstack(hourly_components), axis=0)
+    print(
+        "PJM-style components: "
+        f"correlation={mean_components[0]:.6f}, "
+        f"delay={mean_components[1]:.6f}, "
+        f"precision={mean_components[2]:.6f}",
+        flush=True,
+    )
 
     return float(np.mean(hourly_scores))
 

@@ -196,9 +196,9 @@ SHED_MIN_TANK_TEMP_F = 120
 LOAD_TARGET_TANK_TEMP_F = 130
 ACTIVE_POWER_THRESHOLD_KW = 0.1
 EXPECTED_ON_POWER_KW = 0.5
-FEEDBACK_GAIN = 0.2
+FEEDBACK_GAIN = 0.3
 TRACKING_DEADBAND_KW = 0.25
-MAX_RESPONSE_CHANGE_KW_PER_INTERVAL = 2
+MAX_RESPONSE_CHANGE_KW_PER_INTERVAL = 10
 
 
 # HPWH control parameters (°F)
@@ -593,8 +593,12 @@ def dispatch_regulation_signal(
     previous_actual_delta_kw,
     up_cap,
     dwn_cap,
+    # home_num
 ):
     """Adjust persistent HPWH commands using signed fleet-response feedback."""
+    # up_cap = up_cap / home_num
+    # dwn_cap = dwn_cap / home_num
+
     reg_sig = _normalise_reg_signal(reg_sig)
     if reg_sig > 0:
         target_delta_kw = reg_sig * up_cap
@@ -618,6 +622,24 @@ def dispatch_regulation_signal(
         "released_shed": 0,
     }
     applied_adjustment_kw = 0.0
+
+    # A command in the opposite direction must not remain locked through a
+    # signal reversal.  At zero, release both directions so the fleet returns
+    # to its normal thermostat instead of carrying response across the zero
+    # crossing.  Released homes wait until the next interval before they can
+    # receive another command.
+    forced_release_modes = set()
+    if reg_sig >= 0:
+        forced_release_modes.add("SHED")
+    if reg_sig <= 0:
+        forced_release_modes.add("LOAD")
+    for home in fleet_data:
+        mode = home.get("override")
+        if mode in forced_release_modes:
+            applied_adjustment_kw += _release_home(home)
+            counts[
+                "released_load" if mode == "LOAD" else "released_shed"
+            ] += 1
 
     # Comfort limits override minimum holds. These homes cannot be selected
     # for another command during the same interval.
@@ -1087,12 +1109,21 @@ def main(parameters=None, run_id=None, reg_type="RegA", up_cap=None, dwn_cap=Non
         raise ValueError(
             "B3 requires up_cap and dwn_cap from the matching B2 baseline run."
         )
-    up_cap = _nonnegative_number("up_cap", up_cap)
-    dwn_cap = _nonnegative_number("dwn_cap", dwn_cap)
-    committed_capacity_kw = min(up_cap, dwn_cap)
+    baseline_up_capacity_kw = _nonnegative_number("up_cap", up_cap)
+    baseline_down_capacity_kw = _nonnegative_number("dwn_cap", dwn_cap)
+    committed_capacity_kw = min(
+        baseline_up_capacity_kw,
+        baseline_down_capacity_kw,
+    )
+    if committed_capacity_kw <= 0:
+        raise ValueError(
+            "B3 requires positive up and down capacities to form a symmetric "
+            "sine-wave commitment."
+        )
     print(
-        f"Using B2 regulation capacities: up={up_cap:.3f} kW, "
-        f"down={dwn_cap:.3f} kW",
+        f"Using B2 reliable capacities: up={baseline_up_capacity_kw:.3f} kW, "
+        f"down={baseline_down_capacity_kw:.3f} kW; symmetric sine-wave "
+        f"commitment={committed_capacity_kw:.3f} kW",
         flush=True,
     )
     # print(f"Regulation type: {REG_TYPE} ({signal_file})", flush=True)
@@ -1319,16 +1350,17 @@ def main(parameters=None, run_id=None, reg_type="RegA", up_cap=None, dwn_cap=Non
                     fleet_data,
                     raw_reg_sig,
                     previous_actual_delta_kw,
-                    up_cap,
-                    dwn_cap
+                    committed_capacity_kw,
+                    committed_capacity_kw,
+                    # num_homes,
                 )
 
             else:
                 reg_sig = _normalise_reg_signal(raw_reg_sig)
                 if reg_sig > 0:
-                    target_delta_kw = reg_sig * up_cap
+                    target_delta_kw = reg_sig * committed_capacity_kw
                 elif reg_sig < 0:
-                    target_delta_kw = reg_sig * dwn_cap
+                    target_delta_kw = reg_sig * committed_capacity_kw
                 else:
                     target_delta_kw = 0.0
                 available_up_kw, available_down_kw = (
@@ -1536,9 +1568,13 @@ def main(parameters=None, run_id=None, reg_type="RegA", up_cap=None, dwn_cap=Non
                 "Time": sim_time,
                 "Regulation Signal": reg_sig,
                 "Up Regulation Capacity (kW)":
-                    up_cap,
+                    committed_capacity_kw,
                 "Down Regulation Capacity (kW)":
-                    dwn_cap,
+                    committed_capacity_kw,
+                "B2 Reliable Up Capacity (kW)":
+                    baseline_up_capacity_kw,
+                "B2 Reliable Down Capacity (kW)":
+                    baseline_down_capacity_kw,
                 "Available Up Capacity (kW)":
                     dispatch_state["available_up_kw"],
                 "Available Down Capacity (kW)":
@@ -1776,8 +1812,11 @@ def main(parameters=None, run_id=None, reg_type="RegA", up_cap=None, dwn_cap=Non
         "homes_simulated": len(successful_finalizations),
         "homes_failed": failed_count,
         "run_id": effective_run_id,
-        "up_regulation_capacity_kw": up_cap,
-        "down_regulation_capacity_kw": dwn_cap,
+        "up_regulation_capacity_kw": committed_capacity_kw,
+        "down_regulation_capacity_kw": committed_capacity_kw,
+        "baseline_up_regulation_capacity_kw": baseline_up_capacity_kw,
+        "baseline_down_regulation_capacity_kw": baseline_down_capacity_kw,
+        "committed_regulation_capacity_kw": committed_capacity_kw,
         "baseline_path": baseline_path,
         "controlled_path": controlled_path,
         "vpp_log_path": vpp_log_path,

@@ -43,8 +43,8 @@ def main(del_bldg="N", reg_type="RegA"):
     run_id = f"{base_run_id}_{regulation_label}"
     base_result = run_ochre_base.main(run_id=run_id, reg_type=reg_type)
 
-    up_cap = base_result["up_regulation_capacity_p90_kw"]
-    dwn_cap = base_result["down_regulation_capacity_p90_kw"]
+    up_cap = base_result["up_regulation_capacity_kw"]
+    dwn_cap = base_result["down_regulation_capacity_kw"]
 
     run_ochre_cntrl.main(
         run_id=run_id,
