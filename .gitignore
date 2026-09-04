@@ -218,77 +218,17 @@ __marimo__/
 .streamlit/secrets.toml
 
 .venv/
-
+__pycache__/
+.venv/
+HPWH All Input Files/
+HPWH All Portland Input Files/
+*.csv
+AC All Portland Input Files/
 AC Filtered/
 AC Input Files/
-Ready Data/
-*.csv
-!Old Code/OCHRE/RegA Signal/RegA-ochre.csv
-!Old Code/OCHRE/Metadata/OR_upgrade0.csv
-!Old Code/OCHRE/Metadata/OR_upgrade9.csv
-!Old Code/OCHRE/Weather/Weather.csv
+HPWH 50 Input Files/
+HPWH 80 Input Files/
+HPWH 66 Input Files/
+HPWH Filtered/
 *.png
-*.zip
-Old Code/OCHRE/OCHRE Regulation/AC/Results/
-Old Code/OCHRE/OCHRE Regulation/OCHRE in Excel/HPWH/HPWH All Input Files/
-Old Code/OCHRE/OCHRE Regulation/OCHRE in Excel/HPWH/HPWH All Portland Input Files/
-Old Code/OCHRE/Ready_data/
-AC All Portland Input Files/
-
-Old Code/OCHRE/AC_Test_PID_1.0_0.8_1.0_baseline_power.csv
-Old Code/OCHRE/AC_Test_PID_1.0_0.8_1.0_controlled_power.csv
-Old Code/OCHRE/AC_Test_PID_1.0_0.8_1.0_VPP_Fleet_States.csv
-
-Old Code/OCHRE/AC_Test_PID_1.0_0.8_1.0_baseline.csv
-Old Code/OCHRE/AC_Test_PID_1.0_0.8_1.0_controlled.csv
-Old Code/OCHRE/AC_Test_PID_1.0_0.8_1.0_VPP_Fleet_States.csv
-
-Old Code/OCHRE/HPWH 50 Input Files/
-Old Code/OCHRE/HPWH 66 Input Files/
-Old Code/OCHRE/HPWH 80 Input Files/
-Old Code/OCHRE/HPWH All Input Files/
-Old Code/OCHRE/HPWH All Portland Input Files/
-Old Code/OCHRE/HPWH Filtered/
-
-Old Code/OCHRE/2025_All_630_1_45_1700_1_45_OS_baseline.csv
-Old Code/OCHRE/2025_All_630_1_45_1700_1_45_OS_controlled.csv
-Old Code/OCHRE/AC_Test_PID_1.0_0.8_1.0_baseline.csv
-Old Code/OCHRE/AC_Test_PID_1.0_0.8_1.0_controlled.csv
-Old Code/OCHRE/AC_Test_PID_1.0_0.8_1.0_VPP_Fleet_States.csv
-
-
-Old Code/OCHRE/OCHRE in Excel/.venv-hpwh/*
-Old Code/OCHRE/OCHRE in Excel 9426/.venv-hpwh/
-Old Code/OCHRE/OCHRE in Excel 9426/Excel/
-Old Code/OCHRE/OCHRE in Excel 9426/HPWH/HPWH All Input Files/
-Old Code/OCHRE/OCHRE in Excel 9426/HPWH/HPWH All Portland Input Files/
-Old Code/OCHRE/OCHRE in Excel 9426/HPWH/__pycache__/
-Old Code/OCHRE/OCHRE in Excel 9426/Metadata/
-Old Code/OCHRE/OCHRE in Excel 9426/Weather/
-Old Code/OCHRE/OCHRE in Excel 9426/main/__pycache__/
-# Project-specific Python virtual environments.
-.venv*/
-Old Code/OCHRE/OCHRE Regulation/OCHRE in Excel - Copy/*
-Old Code/OCHRE/OCHRE Regulation/OCHRE in Excel - Zip - 81426/*
-
-!Old Code/OCHRE/OCHRE Regulation/OCHRE in Excel/Reg Sig
-!Old Code/OCHRE/OCHRE Regulation/Regulation Signal/ancillary-services-frequency.csv
-
-HPWH Regulation Testing 824/HPWH All Portland Input Files
-
-HPWH Regulation Testing 824/HPWH All Input Files
-
-HPWH Regulation Testing 831/HPWH All Input Files
-HPWH Regulation Testing 831/HPWH All Portland Input Files
-
-OCHRE in Excel 9426/HPWH/HPWH All Input Files
 *.xlsm
-
-OCHRE in Excel 9426/HPWH/HPWH All Input Files
-
-*/HPWH All Input Files
-*/HPWH All Portland Input Files
-
-Old Code/HPWH Regulation Testing 824/HPWH All Input Files
-Old Code/HPWH Regulation Testing 824/HPWH All Portland Input Files
-

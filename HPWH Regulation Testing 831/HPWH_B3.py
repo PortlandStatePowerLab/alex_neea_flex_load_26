@@ -571,6 +571,9 @@ def _apply_actions(candidates, action, requested_change_kw):
             > MAX_RESPONSE_CHANGE_KW_PER_INTERVAL + 1e-9
         ):
             continue
+        remaining_kw = max(0.0, requested_change_kw - applied_magnitude_kw)
+        if response_kw > remaining_kw + TRACKING_DEADBAND_KW:
+            continue
 
         if action == "RELEASE_LOAD" or action == "RELEASE_SHED":
             _release_home(home)
@@ -620,25 +623,39 @@ def dispatch_regulation_signal(
         "released_load": 0,
         "added_shed": 0,
         "released_shed": 0,
+        "comfort_released_load": 0,
+        "comfort_released_shed": 0,
+        "unlocked_load": 0,
+        "unlocked_shed": 0,
     }
     applied_adjustment_kw = 0.0
 
-    # A command in the opposite direction must not remain locked through a
-    # signal reversal.  At zero, release both directions so the fleet returns
-    # to its normal thermostat instead of carrying response across the zero
-    # crossing.  Released homes wait until the next interval before they can
-    # receive another command.
-    forced_release_modes = set()
-    if reg_sig >= 0:
-        forced_release_modes.add("SHED")
-    if reg_sig <= 0:
-        forced_release_modes.add("LOAD")
+    # Make incompatible or over-producing commands available to the feedback
+    # controller immediately, but do not release the entire group at once.
+    # The feedback calculation below releases only enough estimated response
+    # to approach this interval's target.  This avoids synchronized release
+    # spikes at sine-wave zero crossings.
+    unlock_load = (
+        target_delta_kw <= 0
+        or previous_actual_delta_kw
+        > target_delta_kw + TRACKING_DEADBAND_KW
+    )
+    unlock_shed = (
+        target_delta_kw >= 0
+        or previous_actual_delta_kw
+        < target_delta_kw - TRACKING_DEADBAND_KW
+    )
     for home in fleet_data:
         mode = home.get("override")
-        if mode in forced_release_modes:
-            applied_adjustment_kw += _release_home(home)
+        should_unlock = (
+            mode == "LOAD" and unlock_load
+        ) or (
+            mode == "SHED" and unlock_shed
+        )
+        if should_unlock and home.get("lockout_steps", 0) > 0:
+            home["lockout_steps"] = 0
             counts[
-                "released_load" if mode == "LOAD" else "released_shed"
+                "unlocked_load" if mode == "LOAD" else "unlocked_shed"
             ] += 1
 
     # Comfort limits override minimum holds. These homes cannot be selected
@@ -662,9 +679,11 @@ def dispatch_regulation_signal(
     for home in urgent_shed_releases:
         applied_adjustment_kw += _release_home(home)
         counts["released_shed"] += 1
+        counts["comfort_released_shed"] += 1
     for home in urgent_load_releases:
         applied_adjustment_kw += _release_home(home)
         counts["released_load"] += 1
+        counts["comfort_released_load"] += 1
 
     predicted_delta_kw = previous_actual_delta_kw + applied_adjustment_kw
     available_up_kw, available_down_kw = (
@@ -1618,6 +1637,14 @@ def main(parameters=None, run_id=None, reg_type="RegA", up_cap=None, dwn_cap=Non
                     dispatch_state["added_shed"],
                 "Units Released from SHED":
                     dispatch_state["released_shed"],
+                "Comfort Releases from LOAD":
+                    dispatch_state["comfort_released_load"],
+                "Comfort Releases from SHED":
+                    dispatch_state["comfort_released_shed"],
+                "LOAD Commands Unlocked Early":
+                    dispatch_state["unlocked_load"],
+                "SHED Commands Unlocked Early":
+                    dispatch_state["unlocked_shed"],
 
                 "Actual Average Power (kW)":
                     average_power_kw,
