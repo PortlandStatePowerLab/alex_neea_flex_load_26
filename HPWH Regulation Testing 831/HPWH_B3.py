@@ -390,16 +390,16 @@ def configure_regulation(reg_type):
     REG_SIGNAL = signal_aggregator_mean()
 
 
-    import numpy as np
-    duration_min = Duration * 24 * 60
-    frequency = f"{t_res}min"
-    period = int(duration_min / t_res)
-    sim_times = pd.date_range(start=Start, periods=period, freq=frequency)
-    x = np.arange(0, 1440*0.1, 0.1)
-    REG_SIGNAL = pd.Series(
-        np.sin(x),
-        index=sim_times
-    )
+    # import numpy as np
+    # duration_min = Duration * 24 * 60
+    # frequency = f"{t_res}min"
+    # period = int(duration_min / t_res)
+    # sim_times = pd.date_range(start=Start, periods=period, freq=frequency)
+    # x = np.arange(0, 1440*0.1, 0.1)
+    # REG_SIGNAL = pd.Series(
+    #     np.sin(x),
+    #     index=sim_times
+    # )
     return signal_file
 #########################################
 # TEMPERATURE CONVERSIONS F to C

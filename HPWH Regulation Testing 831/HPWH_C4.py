@@ -19,7 +19,7 @@ import argparse
 # SCORING SETTINGS
 # ---------------------------------------------------------------------------
 
-SCORING_WINDOW_MINUTES = 5.0
+SCORING_WINDOW_MINUTES = 5.0 * 6.0
 MAX_TIMESTEP_MINUTES = 1.0
 MIN_CONTIGUOUS_MINUTES = 15.0
 
@@ -316,6 +316,7 @@ def main(run_id):
         f"correlation={mean_components[0]:.6f}, "
         f"delay={mean_components[1]:.6f}, "
         f"precision={mean_components[2]:.6f}",
+        f"correlation (straight)={target.corr(actual)}",
         flush=True,
     )
 
