@@ -1,0 +1,37 @@
+<ERWH>
+    <DeviceName> </DeviceName>
+    <Version>2</Version>
+
+    <OHCREInputs>
+
+    </OCHREInputs>
+
+    <EnergyInputs>
+
+    </EnergyInputs>
+
+    <RegInputs>
+        <HeatElePwr> </HeatElePwr>
+        <TankVol> </TankVol>
+        <MaxCntrlWaterTemp> </MaxCntrlWaterTemp>
+        <MinCntrlWaterTemp> </MinCntrlWaterTemp>
+        <HeatCap> </HeatCap>
+        <RespTime> </RespTime>
+        <CntrlInt> </CntrlInt>
+
+        <Schedule> </Schedule>
+        <App> </App>
+        <Wireless> </Wireless>
+        <ToU> </ToU>
+        <Standard> </Standard>
+        <UCM> </UCM>
+        <Compliant> </Compliant>
+        <DataCnfrmnt> </DataCnfrmnt>
+        <ShiftCnfrmnt> </ShiftCnfrmnt>
+    </RegInputs>
+
+    <ResInputs>
+
+    </ResInputs>    
+
+</ERWH>

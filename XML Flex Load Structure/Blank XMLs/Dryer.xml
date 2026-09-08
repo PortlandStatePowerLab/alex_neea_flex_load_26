@@ -1,4 +1,4 @@
-<HPWH>
+<Dryer>
     <DeviceName> </DeviceName>
     <Version>2</Version>
 
@@ -11,14 +11,11 @@
     </EnergyInputs>
 
     <RegInputs>
-        <CompPwr> </CompPwr>
-        <ResistPwr> </ResistPwr>
-        <TankVol> </TankVol>
-        <MaxWaterTemp> </MaxWaterTemp>
-        <MinWaterTemp> </MinWaterTemp>
-        <COPUEF> </COPUEF>
-        <HeatCap> </HeatCap>
-        <ResponseTime> </ResponseTime>
+        <RatedPwr> </RatedPwr>
+        <CycleEnergy> </CycleEnergy>
+        <TypCycDur> </TypCycDur>
+        <MaxDefTime> </MaxDefTime>
+        <RespTime> </RespTime>
         <CntrlInt> </CntrlInt>
 
         <Schedule> </Schedule>
@@ -36,4 +33,4 @@
 
     </ResInputs>    
 
-</HPWH>
+</Dryer>

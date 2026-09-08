@@ -41,8 +41,8 @@ D2_PATH = project_dir / "HPWH" / "HPWH_D2.py"
 # Set cells to read/write
 # Makes changing cells easier if they're all in one place
 sample_cell = "K35"
-delete_results_cell = "N37"
-delete_temp_bldg_cell = "N38"
+# delete_results_cell = "N37"
+# delete_temp_bldg_cell = "N38"
 month_cell = "N34"
 week_day_end_cell = "N35"
 fl_type_cell = "I6"
@@ -245,7 +245,7 @@ def set_run_ochre(params, reg_type, result_cell, graph_cell):
 
 def main():
     # Cleanup
-    if WS.Range(delete_results_cell).Value == "Yes":
+    if WS.Shapes.Item("DelPrevResCB").ControlFormat.Value == 1.0:
         subprocess.run([sys.executable, str(D1_PATH)], check=True)
 
     delete_old_graphs()
@@ -279,7 +279,9 @@ def main():
     set_run_ochre(params, "RegD", fast_result_cell, fast_graph_cell)
 
     # Cleanup
-    subprocess.run([sys.executable, str(D1_PATH)], check=True)
+    if WS.Shapes.Item("DelTempBldgCB").ControlFormat.Value == 1.0:
+        subprocess.run([sys.executable, str(D2_PATH)], check=True)
+
 
     excel.Calculate()
 

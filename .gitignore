@@ -232,5 +232,7 @@ HPWH 66 Input Files/
 HPWH Filtered/
 *.png
 *.xlsm
+.venv-hpwh/
+*.zip
 
 !/HPWH All Input Files

@@ -1,0 +1,36 @@
+<EV>
+    <DeviceName> </DeviceName>
+    <Version>2</Version>
+
+    <OHCREInputs>
+
+    </OCHREInputs>
+
+    <EnergyInputs>
+
+    </EnergyInputs>
+
+    <RegInputs>
+        <ChargePwr> </ChargePwr>
+        <BattCap> </BattCap>
+        <BattFlex> </BattFlex>
+        <ChargeEffic> </ChargeEffic>
+        <RespTime> </RespTime>
+        <CntrlInt> </CntrlInt>
+
+        <Schedule> </Schedule>
+        <App> </App>
+        <Wireless> </Wireless>
+        <ToU> </ToU>
+        <Standard> </Standard>
+        <UCM> </UCM>
+        <Compliant> </Compliant>
+        <DataCnfrmnt> </DataCnfrmnt>
+        <ShiftCnfrmnt> </ShiftCnfrmnt>
+    </RegInputs>
+
+    <ResInputs>
+
+    </ResInputs>    
+
+</EV>
