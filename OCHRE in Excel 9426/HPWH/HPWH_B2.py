@@ -168,7 +168,7 @@ XML_ADDRESS = "home.xml"
 CSV_ADDRESS = "in.schedules.csv"
 
 
-REG_TYPE = 'RegD'
+REG_TYPE = 'RegA'
 # The calculator-owned signal folder is the direct parent of HPWH.
 REG_DIR = os.path.join(fl_dir, "Reg Sig")
 REG_ADDRESS = f"{REG_TYPE}-ochre.csv"

@@ -4,14 +4,16 @@ import xml.etree.ElementTree as ET
 import os
 from pathlib import Path
 import platform
-from tkinter import filedialog
+import math
+from tkinter import filedialog, messagebox
 
 VERSION = 2.0
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 my_vars = {}
-cntrl_intop_reg_vars = {}
+print_vars = {}
+fl_type = None
 
 fl_types = ["Type of Flex Load",
             "Heat Pump Water Heater",
@@ -19,65 +21,46 @@ fl_types = ["Type of Flex Load",
             "HVAC",
             "EV Charger",
             "Dryer",
-            "Battery",
-            "Generic"]
+            "Battery"]
 
-# regulation variables
-hpwh_reg = ["HPWH Model", 
-            "Compressor Power [W]",
-            "Resistance Element Power [W]",
-            "Tank Volume [gal]",
-            "Maximum Water Temperature [°F]",
-            "Minimum Water Temperature [°F]",
-            "COP or UEF",
-            "Heating Capacity [BTU/hr]",
-            "Response Time [s]",
-            "Control Interval [s]"]
-erwh_reg = ["ERWH Model",
-            "Heating Element Power [W]"
-            "Tank Volume [gal]",
-            "Maximum Water Temperature [°F]",
-            "Minimum Water Temperature [°F]",
-            "Heating Capacity [BTU/hr]",
-            "Response Time [s]",
-            "Control Interval [s]"]
-hvac_reg = ["HVAC Model",
-            "Heating Capacity [BTU/hr]",
-            "Cooling Capacity [BTU/hr]",
-            "Minimum Modulation [%]",
-            "Maximum Indoor Temperature [°F]",
-            "Minimum Indoor Temperature [°F]",
-            "Response Time [s]",
-            "Control Interval [s]",
-            "Effective Building Thermal Capacity [kWh/°F]"]
-ev_reg = ["EV Model",
-            "Rated Charging Power [kW]",
-            "Maximum Battery Capacity [kWh]",
-            "Usable Battery Flexibility [%]",
-            "Charging Efficiency [%]",
-            "Response Time [s]",
-            "Control Interval [s]"]
-dryer_reg = ["Dryer Model",
-            "Rated Power [kW]",
-            "Cycle Energy [kWh]",
-            "Typical Cycle Duration [min]",
-            "Maximum Deferral Time [min]",
-            "Response Time [s]",
-            "Control Interval [s]"]
-batt_reg = ["Battery Model",
-            "Rated Power [kW]",
-            "Usable Energy Capacity [kWh]",
-            "State of Charge Operating Range [%]",
-            "Response Time [s]",
-            "Control Interval [s]",
-            "Recharge/Recovery Rate [kW]"]
-gen_reg = ["Generic Model",
-            "Total Power [W]",
-            "Regulation Capacity [kWh]",
-            "Continuous Regulation Duration [min]",
-            "Response Time [s]",
-            "Recovery Time [s]",
-            "Control Interval [s]"]
+string_vars = ["Model_Number", 
+               "Brand",
+               "Can_Schedule",
+               "App_Exists",
+               "Wireless_Connection",
+               "Conect_to_ToU_data",
+               "Open_Standard",
+               "UCM_DCM_Ready",
+               "Compliant"]
+
+
+def read_blank_xml(file_path):
+    tree = ET.parse(file_path)
+
+    # Collect unique tags in order of first appearance in the template.
+    unique_tags = list(dict.fromkeys(elem.tag for elem in tree.iter()))
+
+    unique_tags.remove(tree.getroot().tag)  # Remove the root tag from the list
+
+    j = 0
+    remove_tag = []
+    for i in range(len(unique_tags)):
+        if unique_tags[i].endswith("Inputs") or unique_tags[i] == "Version":
+            remove_tag.append(unique_tags[i])
+            j += 1
+
+    for tag in remove_tag:
+        unique_tags.remove(tag)
+
+    print_tags = unique_tags.copy()
+
+    question_vars = string_vars[2:]
+
+    print_tags = [tag + "?" if tag in question_vars else tag for tag in print_tags]
+
+    print_tags = [tag.replace("_", " ") for tag in print_tags]
+
+    return unique_tags, print_tags
 
 # make window scrollable
 def on_mouse_scroll(event):
@@ -91,42 +74,44 @@ def on_mouse_scroll(event):
 
 # show regulation options
 def update_reg_options(event=None):
+    global my_vars, fl_type, print_vars
+
     for widget in options_frame.winfo_children():
         widget.destroy()
 
     selected = cb_fl_type.get()
+    my_vars.clear()
+    print_vars.clear()
+    fl_type = None
+    if selected not in fl_types[1:]:
+        return
 
-    if selected == "Heat Pump Water Heater":
-        my_vars[hpwh_reg[0]] = tk.StringVar()
-        for i in range(1, len(hpwh_reg)):
-            my_vars[hpwh_reg[i]] = tk.DoubleVar()
-    elif selected == "Electric Resistance Water Heater":
-        my_vars[erwh_reg[0]] = tk.StringVar()
-        for i in range(1, len(erwh_reg)):
-            my_vars[erwh_reg[i]] = tk.DoubleVar()
-    elif selected == "HVAC":
-        my_vars[hvac_reg[0]] = tk.StringVar()
-        for i in range(1, len(hvac_reg)):
-            my_vars[hvac_reg[i]] = tk.DoubleVar()
-    elif selected == "EV Charger":
-        my_vars[ev_reg[0]] = tk.StringVar()
-        for i in range(1, len(ev_reg)):
-            my_vars[ev_reg[i]] = tk.DoubleVar()
-    elif selected == "Dryer":
-        my_vars[dryer_reg[0]] = tk.StringVar()
-        for i in range(1, len(dryer_reg)):
-            my_vars[dryer_reg[i]] = tk.DoubleVar()
-    elif selected == "Battery":
-        my_vars[batt_reg[0]] = tk.StringVar()
-        for i in range(1, len(batt_reg)):
-            my_vars[batt_reg[i]] = tk.DoubleVar()
-    elif selected == "Generic":
-        my_vars[gen_reg[0]] = tk.StringVar()
-        for i in range(1, len(gen_reg)):
-            my_vars[gen_reg[i]] = tk.DoubleVar()
+    if cb_fl_type.get() == "Heat Pump Water Heater":
+        fl_type = "HPWH"
+    elif cb_fl_type.get() == "Electric Resistance Water Heater":
+        fl_type = "ERWH"
+    elif cb_fl_type.get() == "HVAC":
+        fl_type = "HVAC"
+    elif cb_fl_type.get() == "EV Charger":
+        fl_type = "EV"
+    elif cb_fl_type.get() == "Dryer":
+        fl_type = "Dryer"
+    elif cb_fl_type.get() == "Battery":
+        fl_type = "Battery"
 
-    show_options()
-    cntrl_intop_reg()
+    tags, labels = read_blank_xml(os.path.join(script_dir, "Blank XMLs", f"{fl_type}.xml"))
+    my_vars.clear()
+    print_vars.clear()
+
+    for tag, label in zip(tags, labels):
+        if tag in string_vars:
+            var = tk.StringVar()
+        else:
+            var = tk.DoubleVar()
+        my_vars[tag] = var
+        print_vars[label] = var
+   
+    show_options(print_vars)
     but_make_xml = tk.Button(options_frame, text="Create XML File", command=make_xml)
     but_make_xml.pack(pady=(10, 20))
 
@@ -151,30 +136,53 @@ def cbut_sc(text, var):
         variable=var
     ).pack()
 
+def copy_fill_xml(source_file, destination_file):
+    tree = ET.parse(source_file)
+    root = tree.getroot()
+
+    for elem in root.iter():
+        if elem.tag == "Version":
+            elem.text = str(VERSION)
+        if elem.tag in my_vars:
+            elem.text = str(my_vars[elem.tag].get())
+
+    tree.write(destination_file, encoding="utf-8", xml_declaration=True)
+
+
 # make the xml file
 def make_xml():
-    if cb_fl_type.get() == "Heat Pump Water Heater":
-        xml_root = ET.Element("HPWH")
-    elif cb_fl_type.get() == "Electric Resistance Water Heater":
-        xml_root = ET.Element("ERWH")
-    elif cb_fl_type.get() == "HVAC":
-        xml_root = ET.Element("HVAC")
-    elif cb_fl_type.get() == "EV Charger":
-        xml_root = ET.Element("EV")
-    elif cb_fl_type.get() == "Dryer":
-        xml_root = ET.Element("Dryer")
-    elif cb_fl_type.get() == "Battery":
-        xml_root = ET.Element("Battery")
-    elif cb_fl_type.get() == "Generic":
-        xml_root = ET.Element("Generic")
-    else:
-        top = tk.Toplevel()
-        top.title("Invalid Flex Load Type")
-        top.geometry("200x75")
-        lbl_ok = tk.Label(top, text="Please select a valid flex load type")
-        lbl_ok.pack()
-        but_ok = tk.Button(top, text="Okay", command=top.destroy)
-        but_ok.pack()
+    if fl_type is None or cb_fl_type.get() not in fl_types[1:]:
+        messagebox.showerror("Select a Load Type", "Please select a flex load type first.")
+        return
+
+    model_number = my_vars['Model_Number'].get()
+    reserved_names = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    reserved_names.update(prefix + digit for prefix in ("COM", "LPT")
+                          for digit in "123456789¹²³")
+    if (not model_number.strip()
+            or model_number != model_number.strip()
+            or model_number.endswith(".")
+            or any(char in '<>:"/\\|?*' or ord(char) < 32 for char in model_number)
+            or model_number.split(".")[0].rstrip().upper() in reserved_names
+            or len(model_number + ".xml") > 255):
+        messagebox.showerror(
+            "Invalid Model Number",
+            "Enter a model number that is a valid Windows filename: no blank names, "
+            "reserved names (such as CON), leading/trailing spaces, trailing periods, "
+            "or characters < > : \" / \\ | ? *. Maximum length: 251 characters.")
+        return
+
+    for tag, var in my_vars.items():
+        if tag not in string_vars:
+            try:
+                valid = math.isfinite(var.get())
+            except (tk.TclError, ValueError, OverflowError):
+                valid = False
+            if not valid:
+                messagebox.showerror(
+                    "Invalid Numeric Input",
+                    f"Please enter a finite number for {tag.replace('_', ' ')}.")
+                return
 
     # output folder will be in specified folder, in new folder labled type of flex load
     # ie user selects hpwh and desktop folder:
@@ -183,30 +191,26 @@ def make_xml():
     out_dir = filedialog.askdirectory(
         title="Please Select Output Folder",
         initialdir="/")
+    if not out_dir:
+        return
 
     OUT_FOLD = str(cb_fl_type.get())
     OUT_PATH = os.path.join(out_dir, OUT_FOLD)
 
-    final_vars = my_vars | cntrl_intop_reg_vars
-    vars_keys = list(final_vars.keys())
+    output_pathname = os.path.join(OUT_PATH, f"{model_number}.xml")
+    if Path(output_pathname).exists() and not messagebox.askyesno(
+            "Replace Existing XML?",
+            f"{output_pathname} already exists. Replace it?"):
+        return
 
-    ET.SubElement(xml_root, "DeviceModel").text = final_vars[vars_keys[0]].get()
-    ET.SubElement(xml_root, "Version").text = str(VERSION)
+    input_path = os.path.join(script_dir, "Blank XMLs", f"{fl_type}.xml")
 
-    # regulation variable xml section
-    reg = ET.SubElement(xml_root, "RegVars")
-    for i in range(1, len(vars_keys)):
-        ET.SubElement(reg, vars_keys[i]).text = final_vars[vars_keys[i]].get()
-
-    # set up the xml file
-    tree = ET.ElementTree(xml_root)
-
-    # check if the directory exists, if not, make it
-    if not Path(OUT_PATH).is_dir():
+    try:
         Path(OUT_PATH).mkdir(parents=True, exist_ok=True)
-    
-    output_pathname = os.path.join(OUT_PATH, f"{final_vars[vars_keys[0]].get()}.xml")
-    tree.write(output_pathname, encoding="utf-8", xml_declaration=True)
+        copy_fill_xml(input_path, output_pathname)
+    except OSError as error:
+        messagebox.showerror("XML File Not Created", str(error))
+        return
 
     if Path(output_pathname).is_file():
         top = tk.Toplevel()
@@ -226,29 +230,7 @@ def make_xml():
         but_ok.pack()
 
 
-def cntrl_intop_reg():
-    cntrl_intop_reg_vars["sched"] = tk.BooleanVar()
-    cntrl_intop_reg_vars["app"] = tk.BooleanVar()
-    cntrl_intop_reg_vars["wireless"] = tk.BooleanVar()
-    cntrl_intop_reg_vars["tou"] = tk.BooleanVar()
-    cntrl_intop_reg_vars["std"] = tk.BooleanVar()
-    cntrl_intop_reg_vars["ucm"] = tk.BooleanVar()
-    cntrl_intop_reg_vars["cmplnt"] = tk.BooleanVar()
-    cntrl_intop_reg_vars["data"] = tk.DoubleVar()
-    cntrl_intop_reg_vars["shift"] = tk.DoubleVar()
-
-    cbut_sc("Can Schedule?", cntrl_intop_reg_vars["sched"])
-    cbut_sc("App Exists?", cntrl_intop_reg_vars["app"])
-    cbut_sc("Wireless Connection?", cntrl_intop_reg_vars["wireless"])
-    cbut_sc("Connect to ToU Data?", cntrl_intop_reg_vars["tou"])
-    cbut_sc("Open Standard?", cntrl_intop_reg_vars["std"])
-    cbut_sc("UCM/DCM Ready?", cntrl_intop_reg_vars["ucm"])
-    cbut_sc("Compliant?", cntrl_intop_reg_vars["cmplnt"])
-    entry_sc("Data Conformant?", cntrl_intop_reg_vars["data"])
-    entry_sc("Shift Conformant?", cntrl_intop_reg_vars["shift"])
-
-
-def show_options():
+def show_options(my_vars):
     vars_keys = list(my_vars.keys())
     for i in range(0, len(vars_keys)):
         entry_sc(vars_keys[i], my_vars[vars_keys[i]])
@@ -301,7 +283,7 @@ lbl_fl_type = tk.Label(sec_frm, text="Flex Load Type:")
 lbl_fl_type.pack(pady=10)
 cb_fl_type = ttk.Combobox(
     sec_frm,
-    values=fl_types,
+    values=fl_types[1:],
     state="readonly"
 )
 cb_fl_type.set("Type of Flex Load")

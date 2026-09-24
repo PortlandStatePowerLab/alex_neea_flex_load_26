@@ -235,4 +235,15 @@ HPWH Filtered/
 .venv-hpwh/
 *.zip
 
-!/HPWH All Input Files
+HPWH All Input Files
+All Filtered
+All Portland Input Files
+Combo All Input Files
+A1+2
+Results
+tests
+validation
+
+!Combo/B0_Commands_Schedule.csv
+!Combo/B0_Devices.csv
+!Combo/B0_Load_Shaping_Controls.csv
