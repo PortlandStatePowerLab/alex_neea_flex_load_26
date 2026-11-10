@@ -13,14 +13,13 @@ import os
 import datetime as dt
 import pandas as pd
 from ochre.utils.schedule import ALL_SCHEDULE_NAMES
-import concurrent.futures
 from pathlib import Path
 import numpy as np
 import json
 import hashlib
 import uuid
 import copy
-from itertools import repeat
+from time import perf_counter
 
 
 # Settings and reusable setup are owned by B_Common.
@@ -145,21 +144,28 @@ def validate_results(frame, expected_times, label, required_columns):
 
 def aggregate_results(homes, work_dir, expected_times, required_by_home):
     """Read only this run's outputs; never silently skip missing homes."""
-    if not homes:
-        raise ValueError("Cannot aggregate an empty fleet")
-    frames = []
-    for home in homes:
-        name = Path(home).name
-        source = Path(work_dir) / "homes" / name / "home_baseline.csv"
-        if not source.is_file():
-            raise FileNotFoundError(source)
-        frame = validate_results(pd.read_csv(source), expected_times, name,
-                                 required_by_home[name])
-        frame["Home"] = name
-        frames.append(frame)
-    output = Path(work_dir) / "baseline.csv"
-    pd.concat(frames, ignore_index=True).to_csv(output, index=False)
-    return str(output)
+    return common.aggregate_home_results(
+        homes, work_dir, expected_times, required_by_home, "baseline", validate_results)
+
+
+def remove_first_day(df, start_date):
+    """
+    Remove the first day of simulation results.
+    Works whether 'Time' is a column or the index.
+    """
+    # If 'Time' column doesn't exist, try using the index
+    if 'Time' not in df.columns:
+        df = df.reset_index()
+        if 'index' in df.columns:
+            df.rename(columns={'index': 'Time'}, inplace=True)
+
+    # Ensure Time is datetime
+    df['Time'] = pd.to_datetime(df['Time'], errors='coerce')
+
+    # Remove first day
+    first_day_end = start_date + pd.Timedelta(days=1)
+    return df[df['Time'] >= first_day_end].copy()
+
 
 
 def update_home_worker(home_data, sim_time):
@@ -391,6 +397,7 @@ def _file_hash(path):
 
 
 def _run_baseline(run_dir, manifest):
+    started = perf_counter()
     homes = find_all_homes(CONFIG["INPUT_DIR"])
     if not homes:
         raise RuntimeError(f"No valid homes in {CONFIG['INPUT_DIR']}")
@@ -451,19 +458,36 @@ def _run_baseline(run_dir, manifest):
     for home in fleet_data:
         if any(type(eq).__module__.endswith("WetAppliance") for eq in home["base"].equipment.values()):
             raise ValueError("WetAppliance requires isolated random generators before threaded baseline updates")
-    manifest["time_start"] = str(sim_times[0])
-    manifest["time_end"] = str(sim_times[-1])
-    manifest["time_steps"] = len(sim_times)
+    output_times = sim_times[sim_times >= CONFIG["Start"] + pd.Timedelta(days=1)]
+    if output_times.empty:
+        raise ValueError("No reporting timestamps remain after removing the first day")
+    manifest["simulation_time_start"] = str(sim_times[0])
+    manifest["simulation_time_end"] = str(sim_times[-1])
+    manifest["simulation_time_steps"] = len(sim_times)
+    manifest["time_start"] = str(output_times[0])
+    manifest["time_end"] = str(output_times[-1])
+    manifest["time_steps"] = len(output_times)
     rows = []
+    simulation_started = perf_counter()
+    manifest["timings_seconds"] = {"setup": simulation_started - started}
     progress_interval = max(1, round(60 / CONFIG["t_res"]))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    with common.numerical_threads(CONFIG), common.fleet_executor(CONFIG) as executor:
         for step, sim_time in enumerate(sim_times, 1):
-            results = list(executor.map(update_home_worker, fleet_data, repeat(sim_time)))
+            results = common.step_fleet(executor, update_home_worker, fleet_data, sim_time)
             for home, result in zip(fleet_data, results):
                 if not result["success"]:
                     raise RuntimeError(f"Update failed at {sim_time} for {home['path']}: {result['error']}")
                 home["last_base_kw"] = result["base_kw"]
                 home["devices"] = result["devices"]
+                if sim_time < output_times[0]:
+                    # Physics/state still advance; only discarded diagnostics
+                    # are released, keeping warm-up from filling fleet RAM.
+                    home["base"].results.clear()
+            # Warm-up states are needed, but their capacity rows are discarded.
+            if sim_time < output_times[0]:
+                if step % progress_interval == 0:
+                    print(f"Completed {step}/{len(sim_times)} steps (warm-up)", flush=True)
+                continue
             up, down, details = estimate_baseline_regulation_capacity_kw(fleet_data, return_details=True)
             row = {"Time": sim_time, "Up Capacity (kW)": up,
                    "Down Capacity (kW)": down, "Homes": len(fleet_data)}
@@ -472,7 +496,10 @@ def _run_baseline(run_dir, manifest):
                 row[f"{device} Down Capacity (kW)"] = values["down_kw"]
             rows.append(row)
             if step % progress_interval == 0 or step == len(sim_times):
-                print(f"Completed {step}/{len(sim_times)} steps", flush=True)
+                print(f"Completed {step}/{len(sim_times)} steps; "
+                      f"elapsed {perf_counter() - simulation_started:.0f}s", flush=True)
+    export_started = perf_counter()
+    manifest["timings_seconds"]["simulation"] = export_started - simulation_started
     required_by_home = {}
     for home in fleet_data:
         name = Path(home["path"]).name
@@ -483,14 +510,17 @@ def _run_baseline(run_dir, manifest):
         for end_use in ("EV", "Battery"):
             if end_use in home["home_info"]["participating_end_uses"]:
                 required.append(end_use + " SOC (-)")
-        frame = validate_results(frame, sim_times, name, required)
+
+        frame = restore_time_column(frame, name)
+        frame = remove_first_day(frame, CONFIG["Start"])
+        frame = validate_results(frame, output_times, name, required)
         # Retain temperatures and other diagnostics in addition to required power.
         destination = run_dir / "homes" / name
         destination.mkdir(parents=True)
         frame.to_csv(destination / "home_baseline.csv", index=False)
         required_by_home[name] = required
-    baseline_path = aggregate_results(homes, run_dir, sim_times, required_by_home)
-    capacities = pd.DataFrame(rows)
+    baseline_path = aggregate_results(homes, run_dir, output_times, required_by_home)
+    capacities = remove_first_day(pd.DataFrame(rows), CONFIG["Start"])
     capacity_path = run_dir / "capacity.csv"
     capacities.to_csv(capacity_path, index=False)
     quantile = float(CONFIG["RELIABLE_CAPACITY_QUANTILE"])
@@ -503,6 +533,8 @@ def _run_baseline(run_dir, manifest):
         "down_regulation_capacity_kw": float(capacities["Down Capacity (kW)"].quantile(quantile)),
     }
     manifest["summary"] = summary
+    manifest["timings_seconds"]["export"] = perf_counter() - export_started
+    print(f"Run timings (seconds): {manifest['timings_seconds']}", flush=True)
     return summary
 
 
@@ -519,9 +551,11 @@ def main():
     manifest = {"run_id": run_id, "status": "running", "configuration": CONFIG,
                 "capacity_basis": "Instantaneous LU/S estimates; excludes response delay and sustained-service guarantees"}
     try:
-        result = _run_baseline(run_dir, manifest)
+        with common.numerical_threads(CONFIG):
+            result = _run_baseline(run_dir, manifest)
         manifest["status"] = "complete"
         print(f"Baseline saved: {result['baseline_path']}", flush=True)
+        print(f"B2 --baseline-run-id {run_id} will save into the same results folder.", flush=True)
         return result
     except Exception as exc:
         manifest.update(status="failed", error=repr(exc))
