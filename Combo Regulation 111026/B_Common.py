@@ -120,10 +120,425 @@ def response_delays(home_seed, config):
             raise ValueError(f"Invalid {prefix} response delay bounds")
         rng = random.Random(f"{home_seed}:{device}:response-delay")
         delays[device] = rng.uniform(low, high)
+
+    selected_device = config.get("DEVICE_TYPE")
+    response_s = config.get("DEVICE_RESPONSE_TIME_S")
+
+    if selected_device is not None and response_s is not None:
+        command_device = {
+            "HPWH": "WH",
+            "ERWH": "WH",
+            "HVAC": "HVAC",
+            "EV": "EV",
+            "Dryer": "Dryer",
+        }[selected_device]
+
+        delays[command_device] = response_s
+    
     return delays
 
 
-def load_configuration():
+def load_configuration(Season, Weekday, REG_TYPE, Output_Folder):
+    #########################################
+    # USER SETTINGS
+    #########################################
+
+    filename = 'Combo_WH_HVAC_Dryer_EV_Battery_TEST_3'
+
+    Input_folder = "Combo Regulation All Input Files"
+
+    # Original OCHRE defaults folder
+    ochre_dir = Path(ochre.__file__).resolve().parent
+    DEFAULT_INPUT = ochre_dir / "defaults" / "Input Files"
+    # print("OCHRE installed at:", ochre_dir)
+    # print(DEFAULT_INPUT)
+
+    DEFAULT_WEATHER = ochre_dir / "defaults" / "Weather" / "USA_OR_Portland.Intl.AP.726980_TMY3.epw"
+    # G4100510 is Multnomah county weather station, code will complain this is missing but it doesn't work if you actually try to use it
+
+    # working folder
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    fl_dir = os.path.dirname(script_dir)
+    WORKING_DIR = os.path.dirname(fl_dir)
+    INPUT_DIR = os.path.join(fl_dir, Input_folder, "bldg")
+    WEATHER_DIR = os.path.join(fl_dir, "Weather")
+    WEATHER_FILE = os.path.join(WEATHER_DIR, "USA_OR_Portland.Intl.AP.726980_TMY3.epw")
+    XML_ADDRESS = "home.xml"
+    CSV_ADDRESS = "in.schedules.csv"
+
+    # REG_TYPE = 'RegA'
+    # The calculator-owned signal folder is the direct parent of HPWH.
+    REG_DIR = os.path.join(script_dir, "Reg Sig")
+    REG_ADDRESS = f"{REG_TYPE}-ochre.csv"
+
+    # Simulation parameters
+    # if Season == "Spring":
+    #     if Weekday:
+    #         Start = dt.datetime(2018, 4, 11, 0, 0)
+    #     else:
+    #         Start = dt.datetime(2018, 4, 15, 0, 0)
+    if Season == "Summer":
+        if Weekday:
+            Start = dt.datetime(2018, 7, 18, 0, 0)
+        else:
+            Start = dt.datetime(2018, 7, 22, 0, 0)
+    # if Season == "Fall":
+    #     if Weekday:
+    #         Start = dt.datetime(2018, 10, 17, 0, 0)
+    #     else:
+    #         Start = dt.datetime(2018, 10, 21, 0, 0)
+    if Season == "Winter":
+        if Weekday:
+            Start = dt.datetime(2018, 1, 17, 0, 0)
+        else:
+            Start = dt.datetime(2018, 1, 21, 0, 0)
+    # Start = dt.datetime(2018, 8, 11, 0, 0)
+    Duration = 2  # days
+    t_res = 1  # minutes
+
+    # NUM_HOMES = 10
+
+    # B3 receives its directional regulation capacities from B2's baseline run.
+
+    # Controller hold; physical OCHRE cycling limits remain enforced.
+    MIN_HOLD_MINUTES = 1
+    MIN_HOLD_STEPS = max(1, round(MIN_HOLD_MINUTES / t_res))
+    CONTROL_INTERVAL_MINUTES = 1
+    CONTROL_INTERVAL_STEPS = max(1, round(CONTROL_INTERVAL_MINUTES / t_res))
+    ACTIVE_POWER_THRESHOLD_KW = 0.1
+    EXPECTED_ON_POWER_KW = 0.5
+    # Partial corrections reduce hunting when thermal response estimates and
+    # delayed activations differ from the power delivered next minute.
+    # Set to 1.0 to reproduce the previous full-error correction.
+    FEEDBACK_GAIN = 0.8
+    TRACKING_DEADBAND_KW = 0.25
+    # None lets B2 use the full directional capacity span. A fixed 10 kW
+    # fleet-wide limit prevented large fleets from following fast signals.
+    # Set a finite nonnegative kW value to study an explicit dispatch limit.
+    MAX_RESPONSE_CHANGE_KW_PER_INTERVAL = None
+
+    # WH control parameters (Â°F)
+    # GE - Grid Emergency, CP - Critical Peak, Shed
+    WH_Tcontrol_GEF = 90
+    WH_Tcontrol_GEdeadbandF = 10
+    WH_Tcontrol_CPF = 120
+    WH_Tcontrol_CPdeadbandF = 10
+    WH_Tcontrol_SHEDF = 126
+    WH_Tcontrol_deadbandF = 10
+    # ALU - Advanced load up, LOAD - Load up
+    WH_Tcontrol_ALUF = 140
+    WH_Tcontrol_ALUdeadbandF = 2
+    WH_Tcontrol_LOADF = 130
+    WH_Tcontrol_LOADdeadbandF = 2
+
+    WH_TbaselineF = 130
+    WH_TdeadbandF = 7
+    WH_Tinit = 130
+
+    # Response time in seconds
+    WH_RESPONSE_MIN = 30
+    WH_RESPONSE_MAX = 90
+
+    count = 0
+
+    # AC control parameters (Â°F)
+    # GE - Grid Emergency, CP - Critical Peak, Shed
+    AC_Tcontrol_GEF = 95
+    AC_Tcontrol_GEdeadbandF = 4
+    AC_Tcontrol_CPF = 80
+    AC_Tcontrol_CPdeadbandF = 4
+    AC_Tcontrol_SHEDF = 76
+    AC_Tcontrol_deadbandF = 4
+    # ALU - Advanced load up, LOAD - Load up
+    AC_Tcontrol_ALUF = 64
+    AC_Tcontrol_ALUdeadbandF = 2
+    AC_Tcontrol_LOADF = 68
+    AC_Tcontrol_LOADdeadbandF = 2
+
+    AC_TbaselineF = 72
+    AC_TdeadbandF = 2
+    AC_TinitF = 72
+
+    # Heating control parameters (Â°F)
+    # GE - Grid Emergency, CP - Critical Peak, Shed
+    HEAT_Tcontrol_GEF = 45
+    HEAT_Tcontrol_GEdeadbandF = 4
+    HEAT_Tcontrol_CPF = 60
+    HEAT_Tcontrol_CPdeadbandF = 4
+    HEAT_Tcontrol_SHEDF = 64
+    HEAT_Tcontrol_deadbandF = 4
+    # ALU - Advanced load up, LOAD - Load up
+    HEAT_Tcontrol_ALUF = 76
+    HEAT_Tcontrol_ALUdeadbandF = 2
+    HEAT_Tcontrol_LOADF = 72
+    HEAT_Tcontrol_LOADdeadbandF = 2
+
+    HEAT_TbaselineF = 68
+    HEAT_TdeadbandF = 2
+    HEAT_TinitF = 68
+
+    # Response time in seconds
+    HVAC_RESPONSE_MIN = 30
+    HVAC_RESPONSE_MAX = 90
+
+    # Dryer duty cycle parameters, dryers can't load up only curtail power
+    dryer_duty_cycle_shed = 0.5
+    dryer_duty_cycle_cp = 0.25
+    dryer_duty_cycle_ge = 0
+
+    # EV Control Settings
+    DEFAULT_CHARGER_POWER_KW = 11.5 # Fallback 1.6 for Level 1, 5.6 for Level 2 (Dynamically checked per home below)
+    DEFAULT_CAPACITY_KWH = 60.0 # Fallback capacity if missing from HPXML
+    EV_SHED_PCT = 0.5
+    EV_CP_PCT = 0.25
+    EV_GE_PCT = 0
+
+    # Battery Control Settings
+    BATTERY_PARAMS = {
+        "capacity_kwh": 10,         # Usable energy capacity in kWh
+        "capacity": 1.0,            # Max continuous power rating in kW
+        "efficiency": 0.98,         # Discharging efficiency
+        "efficiency_charge": 0.98,  # Charging efficiency
+        "soc_init": 0.5,            # Start at 50% SOC
+        "soc_min": 0.0,             # Minimum allowable SOC
+        "soc_max": 1.0,             # Maximum allowable SOC
+    }
+
+    # Control commands in kW (+ is charging/Load Up, - is discharging/Shed)
+    P_Battery_ALU_KW = 1.0 * BATTERY_PARAMS['capacity']        # Charge battery ALU
+    P_Battery_LU_KW = 0.25 * BATTERY_PARAMS['capacity']        # Charge battery LU
+    P_Battery_SHED_KW = -0.25 * BATTERY_PARAMS['capacity']     # Discharge battery Shed
+    P_Battery_CP_KW = -0.5 * BATTERY_PARAMS['capacity']        # Discharge battery CP
+    P_Battery_GE_KW = -1.0 * BATTERY_PARAMS['capacity']        # Discharge battery GE
+    P_Battery_IDLE_KW = 0.0                                    # Idle
+
+
+    # ---------------------------------------------------------
+    # LOAD DEVICES FROM CSV
+    # ---------------------------------------------------------
+    devices_file = os.path.join(script_dir, "B0_Devices.csv")
+    try:
+        df_devices = pd.read_csv(devices_file)
+        # Convert to dictionary mapping 'Device' to 'Simulation'
+        device_sim_map = dict(zip(df_devices['Device'], df_devices['Simulation']))
+    except FileNotFoundError:
+        print(f"[WARNING] {devices_file} not found. Defaulting to OFF.")
+        device_sim_map = {}
+
+    WH_SIMULATION = device_sim_map.get("WH", "OFF")
+    HVAC_SIMULATION = device_sim_map.get("HVAC", "OFF")
+    DRYER_SIMULATION = device_sim_map.get("Dryer", "OFF")
+    EV_SIMULATION = device_sim_map.get("EV", "OFF")
+    BATTERY_SIMULATION = device_sim_map.get("Battery", "OFF")
+
+    #########################################
+    # TEMPERATURE CONVERSIONS F to C
+    #########################################
+
+    WH_Tcontrol_GEC = f_to_c(WH_Tcontrol_GEF)
+    WH_Tcontrol_GEdeadbandC = f_to_c_DB(WH_Tcontrol_GEdeadbandF)
+    WH_Tcontrol_CPC = f_to_c(WH_Tcontrol_CPF)
+    WH_Tcontrol_CPdeadbandC = f_to_c_DB(WH_Tcontrol_CPdeadbandF)
+    WH_Tcontrol_SHEDC = f_to_c(WH_Tcontrol_SHEDF)
+    WH_Tcontrol_deadbandC = f_to_c_DB(WH_Tcontrol_deadbandF)
+
+    WH_Tcontrol_ALUC = f_to_c(WH_Tcontrol_ALUF)
+    WH_Tcontrol_ALUdeadbandC = f_to_c_DB(WH_Tcontrol_ALUdeadbandF)
+    WH_Tcontrol_LOADC = f_to_c(WH_Tcontrol_LOADF)
+    WH_Tcontrol_LOADdeadbandC = f_to_c_DB(WH_Tcontrol_LOADdeadbandF)
+
+    WH_TbaselineC = f_to_c(WH_TbaselineF)
+    WH_TdeadbandC = f_to_c_DB(WH_TdeadbandF)
+    WH_TinitC = f_to_c(WH_Tinit)
+
+
+    AC_Tcontrol_GEC = f_to_c(AC_Tcontrol_GEF)
+    AC_Tcontrol_GEdeadbandC = f_to_c_DB(AC_Tcontrol_GEdeadbandF)
+    AC_Tcontrol_CPC = f_to_c(AC_Tcontrol_CPF)
+    AC_Tcontrol_CPdeadbandC = f_to_c_DB(AC_Tcontrol_CPdeadbandF)
+    AC_Tcontrol_SHEDC = f_to_c(AC_Tcontrol_SHEDF)
+    AC_Tcontrol_deadbandC = f_to_c_DB(AC_Tcontrol_deadbandF)
+
+    AC_Tcontrol_ALUC = f_to_c(AC_Tcontrol_ALUF)
+    AC_Tcontrol_ALUdeadbandC = f_to_c_DB(AC_Tcontrol_ALUdeadbandF)
+    AC_Tcontrol_LOADC = f_to_c(AC_Tcontrol_LOADF)
+    AC_Tcontrol_LOADdeadbandC = f_to_c_DB(AC_Tcontrol_LOADdeadbandF)
+
+    AC_TbaselineC = f_to_c(AC_TbaselineF)
+    AC_TdeadbandC = f_to_c_DB(AC_TdeadbandF)
+    AC_TinitC = f_to_c(AC_TinitF)
+
+
+    HEAT_Tcontrol_GEC = f_to_c(HEAT_Tcontrol_GEF)
+    HEAT_Tcontrol_GEdeadbandC = f_to_c_DB(HEAT_Tcontrol_GEdeadbandF)
+    HEAT_Tcontrol_CPC = f_to_c(HEAT_Tcontrol_CPF)
+    HEAT_Tcontrol_CPdeadbandC = f_to_c_DB(HEAT_Tcontrol_CPdeadbandF)
+    HEAT_Tcontrol_SHEDC = f_to_c(HEAT_Tcontrol_SHEDF)
+    HEAT_Tcontrol_deadbandC = f_to_c_DB(HEAT_Tcontrol_deadbandF)
+
+    HEAT_Tcontrol_ALUC = f_to_c(HEAT_Tcontrol_ALUF)
+    HEAT_Tcontrol_ALUdeadbandC = f_to_c_DB(HEAT_Tcontrol_ALUdeadbandF)
+    HEAT_Tcontrol_LOADC = f_to_c(HEAT_Tcontrol_LOADF)
+    HEAT_Tcontrol_LOADdeadbandC = f_to_c_DB(HEAT_Tcontrol_LOADdeadbandF)
+
+    HEAT_TbaselineC = f_to_c(HEAT_TbaselineF)
+    HEAT_TdeadbandC = f_to_c_DB(HEAT_TdeadbandF)
+    HEAT_TinitC = f_to_c(HEAT_TinitF)
+
+
+    # Cancel if failures > discovered homes - this target.
+    # The inclusive comparison requires MORE than this many successes.
+    MIN_INITIALIZED_HOMES = 430
+    RELIABLE_CAPACITY_QUANTILE = 0.10
+
+    # Keep existing setting names so callers can migrate incrementally.
+    return {
+        "filename": filename,
+        "Input_folder": Input_folder,
+        "DEFAULT_INPUT": DEFAULT_INPUT,
+        "DEFAULT_WEATHER": DEFAULT_WEATHER,
+        "script_dir": script_dir,
+        "fl_dir": fl_dir,
+        "WORKING_DIR": WORKING_DIR,
+        "INPUT_DIR": INPUT_DIR,
+        "WEATHER_DIR": WEATHER_DIR,
+        "WEATHER_FILE": WEATHER_FILE,
+        "XML_ADDRESS": XML_ADDRESS,
+        "CSV_ADDRESS": CSV_ADDRESS,
+        "Start": Start,
+        "Duration": Duration,
+        "t_res": t_res,
+        "WH_Tcontrol_GEF": WH_Tcontrol_GEF,
+        "WH_Tcontrol_GEdeadbandF": WH_Tcontrol_GEdeadbandF,
+        "WH_Tcontrol_CPF": WH_Tcontrol_CPF,
+        "WH_Tcontrol_CPdeadbandF": WH_Tcontrol_CPdeadbandF,
+        "WH_Tcontrol_SHEDF": WH_Tcontrol_SHEDF,
+        "WH_Tcontrol_deadbandF": WH_Tcontrol_deadbandF,
+        "WH_Tcontrol_ALUF": WH_Tcontrol_ALUF,
+        "WH_Tcontrol_ALUdeadbandF": WH_Tcontrol_ALUdeadbandF,
+        "WH_Tcontrol_LOADF": WH_Tcontrol_LOADF,
+        "WH_Tcontrol_LOADdeadbandF": WH_Tcontrol_LOADdeadbandF,
+        "WH_TbaselineF": WH_TbaselineF,
+        "WH_TdeadbandF": WH_TdeadbandF,
+        "WH_Tinit": WH_Tinit,
+        "WH_RESPONSE_MIN": WH_RESPONSE_MIN,
+        "WH_RESPONSE_MAX": WH_RESPONSE_MAX,
+        "AC_Tcontrol_GEF": AC_Tcontrol_GEF,
+        "AC_Tcontrol_GEdeadbandF": AC_Tcontrol_GEdeadbandF,
+        "AC_Tcontrol_CPF": AC_Tcontrol_CPF,
+        "AC_Tcontrol_CPdeadbandF": AC_Tcontrol_CPdeadbandF,
+        "AC_Tcontrol_SHEDF": AC_Tcontrol_SHEDF,
+        "AC_Tcontrol_deadbandF": AC_Tcontrol_deadbandF,
+        "AC_Tcontrol_ALUF": AC_Tcontrol_ALUF,
+        "AC_Tcontrol_ALUdeadbandF": AC_Tcontrol_ALUdeadbandF,
+        "AC_Tcontrol_LOADF": AC_Tcontrol_LOADF,
+        "AC_Tcontrol_LOADdeadbandF": AC_Tcontrol_LOADdeadbandF,
+        "AC_TbaselineF": AC_TbaselineF,
+        "AC_TdeadbandF": AC_TdeadbandF,
+        "AC_TinitF": AC_TinitF,
+        "HEAT_Tcontrol_GEF": HEAT_Tcontrol_GEF,
+        "HEAT_Tcontrol_GEdeadbandF": HEAT_Tcontrol_GEdeadbandF,
+        "HEAT_Tcontrol_CPF": HEAT_Tcontrol_CPF,
+        "HEAT_Tcontrol_CPdeadbandF": HEAT_Tcontrol_CPdeadbandF,
+        "HEAT_Tcontrol_SHEDF": HEAT_Tcontrol_SHEDF,
+        "HEAT_Tcontrol_deadbandF": HEAT_Tcontrol_deadbandF,
+        "HEAT_Tcontrol_ALUF": HEAT_Tcontrol_ALUF,
+        "HEAT_Tcontrol_ALUdeadbandF": HEAT_Tcontrol_ALUdeadbandF,
+        "HEAT_Tcontrol_LOADF": HEAT_Tcontrol_LOADF,
+        "HEAT_Tcontrol_LOADdeadbandF": HEAT_Tcontrol_LOADdeadbandF,
+        "HEAT_TbaselineF": HEAT_TbaselineF,
+        "HEAT_TdeadbandF": HEAT_TdeadbandF,
+        "HEAT_TinitF": HEAT_TinitF,
+        "HVAC_RESPONSE_MIN": HVAC_RESPONSE_MIN,
+        "HVAC_RESPONSE_MAX": HVAC_RESPONSE_MAX,
+        "dryer_duty_cycle_shed": dryer_duty_cycle_shed,
+        "dryer_duty_cycle_cp": dryer_duty_cycle_cp,
+        "dryer_duty_cycle_ge": dryer_duty_cycle_ge,
+        "DEFAULT_CHARGER_POWER_KW": DEFAULT_CHARGER_POWER_KW,
+        "DEFAULT_CAPACITY_KWH": DEFAULT_CAPACITY_KWH,
+        "EV_SHED_PCT": EV_SHED_PCT,
+        "EV_CP_PCT": EV_CP_PCT,
+        "EV_GE_PCT": EV_GE_PCT,
+        "BATTERY_PARAMS": BATTERY_PARAMS,
+        "P_Battery_ALU_KW": P_Battery_ALU_KW,
+        "P_Battery_LU_KW": P_Battery_LU_KW,
+        "P_Battery_SHED_KW": P_Battery_SHED_KW,
+        "P_Battery_CP_KW": P_Battery_CP_KW,
+        "P_Battery_GE_KW": P_Battery_GE_KW,
+        "P_Battery_IDLE_KW": P_Battery_IDLE_KW,
+        "WH_SIMULATION": WH_SIMULATION,
+        "HVAC_SIMULATION": HVAC_SIMULATION,
+        "DRYER_SIMULATION": DRYER_SIMULATION,
+        "EV_SIMULATION": EV_SIMULATION,
+        "BATTERY_SIMULATION": BATTERY_SIMULATION,
+        "WH_Tcontrol_GEC": WH_Tcontrol_GEC,
+        "WH_Tcontrol_GEdeadbandC": WH_Tcontrol_GEdeadbandC,
+        "WH_Tcontrol_CPC": WH_Tcontrol_CPC,
+        "WH_Tcontrol_CPdeadbandC": WH_Tcontrol_CPdeadbandC,
+        "WH_Tcontrol_SHEDC": WH_Tcontrol_SHEDC,
+        "WH_Tcontrol_deadbandC": WH_Tcontrol_deadbandC,
+        "WH_Tcontrol_ALUC": WH_Tcontrol_ALUC,
+        "WH_Tcontrol_ALUdeadbandC": WH_Tcontrol_ALUdeadbandC,
+        "WH_Tcontrol_LOADC": WH_Tcontrol_LOADC,
+        "WH_Tcontrol_LOADdeadbandC": WH_Tcontrol_LOADdeadbandC,
+        "WH_TbaselineC": WH_TbaselineC,
+        "WH_TdeadbandC": WH_TdeadbandC,
+        "WH_TinitC": WH_TinitC,
+        "AC_Tcontrol_GEC": AC_Tcontrol_GEC,
+        "AC_Tcontrol_GEdeadbandC": AC_Tcontrol_GEdeadbandC,
+        "AC_Tcontrol_CPC": AC_Tcontrol_CPC,
+        "AC_Tcontrol_CPdeadbandC": AC_Tcontrol_CPdeadbandC,
+        "AC_Tcontrol_SHEDC": AC_Tcontrol_SHEDC,
+        "AC_Tcontrol_deadbandC": AC_Tcontrol_deadbandC,
+        "AC_Tcontrol_ALUC": AC_Tcontrol_ALUC,
+        "AC_Tcontrol_ALUdeadbandC": AC_Tcontrol_ALUdeadbandC,
+        "AC_Tcontrol_LOADC": AC_Tcontrol_LOADC,
+        "AC_Tcontrol_LOADdeadbandC": AC_Tcontrol_LOADdeadbandC,
+        "AC_TbaselineC": AC_TbaselineC,
+        "AC_TdeadbandC": AC_TdeadbandC,
+        "AC_TinitC": AC_TinitC,
+        "HEAT_Tcontrol_GEC": HEAT_Tcontrol_GEC,
+        "HEAT_Tcontrol_GEdeadbandC": HEAT_Tcontrol_GEdeadbandC,
+        "HEAT_Tcontrol_CPC": HEAT_Tcontrol_CPC,
+        "HEAT_Tcontrol_CPdeadbandC": HEAT_Tcontrol_CPdeadbandC,
+        "HEAT_Tcontrol_SHEDC": HEAT_Tcontrol_SHEDC,
+        "HEAT_Tcontrol_deadbandC": HEAT_Tcontrol_deadbandC,
+        "HEAT_Tcontrol_ALUC": HEAT_Tcontrol_ALUC,
+        "HEAT_Tcontrol_ALUdeadbandC": HEAT_Tcontrol_ALUdeadbandC,
+        "HEAT_Tcontrol_LOADC": HEAT_Tcontrol_LOADC,
+        "HEAT_Tcontrol_LOADdeadbandC": HEAT_Tcontrol_LOADdeadbandC,
+        "HEAT_TbaselineC": HEAT_TbaselineC,
+        "HEAT_TdeadbandC": HEAT_TdeadbandC,
+        "HEAT_TinitC": HEAT_TinitC,
+        "REG_TYPE": REG_TYPE,
+        "REG_SIGNAL": REG_SIGNAL,
+        "MIN_HOLD_STEPS": MIN_HOLD_STEPS,
+        "MIN_HOLD_MINUTES": MIN_HOLD_MINUTES,
+        "CONTROL_INTERVAL_STEPS": CONTROL_INTERVAL_STEPS,
+        "ACTIVE_POWER_THRESHOLD_KW": ACTIVE_POWER_THRESHOLD_KW,
+        "EXPECTED_ON_POWER_KW": EXPECTED_ON_POWER_KW,
+        "FEEDBACK_GAIN": FEEDBACK_GAIN,
+        "REGULATION_CAPACITY_FRACTION": 1.0,
+        "REGULATION_CAPACITY_MODE": "asymmetric",
+        "ENERGY_AWARE_DISPATCH": True,
+        "ENERGY_RECOVERY_HOURS": 2.0,
+        "CONTINUOUS_POWER_CONTROL": True,
+        "CAUSAL_LOOKAHEAD": True,
+        "TRACKING_DEADBAND_KW": TRACKING_DEADBAND_KW,
+        "MAX_RESPONSE_CHANGE_KW_PER_INTERVAL": MAX_RESPONSE_CHANGE_KW_PER_INTERVAL,
+        "RELIABLE_CAPACITY_QUANTILE": RELIABLE_CAPACITY_QUANTILE,
+        "MIN_INITIALIZED_HOMES": MIN_INITIALIZED_HOMES,
+        # Runtime settings do not change the physical model or control cadence.
+        "FLEET_WORKERS": 2,
+        "NUMERICAL_THREADS": 1,
+        "REG_DIR": REG_DIR,
+        "REG_ADDRESS": REG_ADDRESS,
+        "OUTPUT_FOLDER": Output_Folder,
+        "RESULTS_DIR": str(Path(__file__).resolve().parent / Output_Folder),
+    }
+
+
+def load_configuration_hardcoded():
     #########################################
     # USER SETTINGS
     #########################################
@@ -494,11 +909,12 @@ def load_configuration():
         "RELIABLE_CAPACITY_QUANTILE": RELIABLE_CAPACITY_QUANTILE,
         "MIN_INITIALIZED_HOMES": MIN_INITIALIZED_HOMES,
         # Runtime settings do not change the physical model or control cadence.
-        "FLEET_WORKERS": 2,
-        "NUMERICAL_THREADS": 1,
+        "FLEET_WORKERS": 8,
+        "NUMERICAL_THREADS": 2,
         "REG_DIR": REG_DIR,
         "REG_ADDRESS": REG_ADDRESS,
     }
+
 
 
 def shift_time(time_str, minutes):
@@ -628,6 +1044,116 @@ def get_ev_capacity_or_range(hpxml_path, default_capacity_kwh=60.0):
     return default_capacity_kwh
 
 
+def estimate_wh_regulation_capacity_kw(home, wh, settings):
+    """Estimate immediate LU/S headroom without advancing the equipment.
+
+    Uses current temperatures and current capacity/COP. This estimates
+    instantaneous response, not sustained capacity or delayed response.
+    """
+    if not wh.is_electric or wh.is_gas:
+        return 0.0, 0.0
+
+    if wh.use_ideal_capacity:
+        raise ValueError(
+            "WH response estimation currently requires "
+            "thermostat control, not ideal-capacity control"
+        )
+
+    measured_kw = float(wh.electric_kw)
+    temperatures = np.asarray(wh.model.states, dtype=float)
+
+    if (
+        not np.isfinite(measured_kw)
+        or temperatures.ndim != 1
+        or not temperatures.size
+        or not np.isfinite(temperatures).all()
+    ):
+        raise ValueError("Invalid water-heater power or temperatures")
+
+    measured_kw = max(0.0, measured_kw)
+
+    def predicted_power(setpoint, deadband):
+        # The copy shares temperature data, which the thermostat only reads.
+        # Changes to mode/setpoint/deadband affect the copy, not the real WH.
+        probe = copy.copy(wh)
+        probe.setpoint_temp = float(setpoint)
+        probe.deadband_temp = float(deadband)
+
+        requested_mode = probe.run_thermostat_control()
+
+        # None means retain the current physical mode.
+        if requested_mode is None:
+            requested_mode = wh.mode
+
+        # Match OCHRE's minimum-time restriction.
+        minimum_time = wh.min_time_in_mode.get(wh.mode)
+        if (
+            requested_mode != wh.mode
+            and minimum_time is not None
+            and wh.time_in_mode < minimum_time
+        ):
+            requested_mode = wh.mode
+
+        if requested_mode == "Heat Pump On":
+            power_kw = (
+                wh.hp_capacity / wh.hp_cop
+                + wh.fan_power
+            ) / 1000.0
+
+        elif requested_mode in {"Upper On", "Lower On"}:
+            power_kw = wh.capacity_rated / wh.efficiency / 1000.0
+
+            # HPWH electronics remain powered when resistance heat runs.
+            if hasattr(wh, "hp_capacity"):
+                power_kw += wh.parasitic_power / 1000.0
+
+        elif requested_mode == "Off":
+            power_kw = (
+                getattr(wh, "parasitic_power", 0.0) / 1000.0
+            )
+
+        else:
+            raise ValueError(
+                f"Unsupported water-heater mode: {requested_mode!r}"
+            )
+
+        if not np.isfinite(power_kw) or power_kw < 0:
+            raise ValueError("Invalid predicted water-heater power")
+
+        return power_kw
+
+    load_power = predicted_power(
+        settings["WH_Tcontrol_LOADC"],
+        settings["WH_Tcontrol_LOADdeadbandC"],
+    )
+
+    shed_power = predicted_power(
+        settings["WH_Tcontrol_SHEDC"],
+        settings["WH_Tcontrol_deadbandC"],
+    )
+
+    up_kw = max(0.0, load_power - measured_kw)
+    down_kw = max(0.0, measured_kw - shed_power)
+
+    # Apply the study's service-temperature limits to both B1 and B2.
+    maximum = settings.get("WH_MAX_TEMPERATURE_C")
+    minimum = settings.get("WH_MIN_TEMPERATURE_C")
+    margin = float(settings.get("WH_LIMIT_MARGIN_C", 0.0))
+
+    if maximum is not None:
+        if temperatures.max() >= float(maximum) - margin:
+            up_kw = 0.0
+
+    if minimum is not None:
+        service_index = settings["WH_SERVICE_NODE_INDEX"]
+        if not 0 <= service_index < len(temperatures):
+            raise ValueError("Invalid WH service-node index")
+
+        if temperatures[service_index] <= float(minimum) + margin:
+            down_kw = 0.0
+
+    return up_kw, down_kw
+
 def build_equip(home_path, config):
     """Return fresh OCHRE equipment overrides and home-specific EV information.
 
@@ -641,11 +1167,29 @@ def build_equip(home_path, config):
         equipment["Water Heating"] = {
             "Initial Temperature (C)": config["WH_TinitC"],
             "hp_only_mode": True,
-            "Max Tank Temperature (C)": 70,
+            "Max Tank Temperature (C)": config.get(
+                "WH_MAX_TEMPERATURE_C", 70
+            ),
             "Upper Node": 3,
             "Lower Node": 10,
             "Upper Node Weight": 0.75,
         }
+        if config.get("DEVICE_TYPE") == "HPWH":
+            physical = config["DEVICE_PARAMETERS"].get("physical", {})
+            compressor_w = physical.get("rated_compressor_power_w")
+
+            if compressor_w is not None:
+                if isinstance(compressor_w, bool):
+                    raise ValueError("Compressor power must be numeric")
+
+                compressor_w = float(compressor_w)
+
+                if not np.isfinite(compressor_w) or compressor_w <= 0:
+                    raise ValueError(
+                        "Compressor power must be finite and greater than zero"
+                    )
+
+                equipment["Water Heating"]["HPWH Power (W)"] = compressor_w
     if config["BATTERY_SIMULATION"] == "ON":
         equipment["Battery"] = copy.deepcopy(config["BATTERY_PARAMS"])
     if config["EV_SIMULATION"] == "ON":
@@ -721,6 +1265,32 @@ def init_home(home_path, config, schedule_file, run_kind="baseline"):
     for eq in dwelling.equipment.values():
         if isinstance(eq, ElectricVehicle):
             eq.generate_results = MethodType(_ev_generate_results, eq)
+    if config.get("DEVICE_TYPE") == "HPWH":
+        hpwh = next(
+            (
+                eq for eq in dwelling.equipment.values()
+                if eq.end_use == "Water Heating"
+                and hasattr(eq, "hp_capacity_nominal")
+            ),
+            None,
+        )
+
+        if hpwh is None:
+            raise ValueError(f"{home_name}: expected an HPWH")
+
+        expected_power = config["DEVICE_PARAMETERS"]["physical"].get(
+            "rated_compressor_power_w"
+        )
+
+        nominal_power = hpwh.hp_capacity_nominal / hpwh.cop_nominal
+
+        if expected_power is not None and not np.isclose(
+            nominal_power, float(expected_power)
+        ):
+            raise ValueError(
+                f"{home_name}: requested {expected_power} W, "
+                f"but initialized {nominal_power} W"
+            )
     end_uses = sorted({eq.end_use for eq in dwelling.equipment.values() if eq.is_electric})
     participating = [end_use for end_use in end_uses if end_use in FLEX_END_USES
                      and config[FLEX_END_USES[end_use][1]] == "ON"]
@@ -866,3 +1436,135 @@ def configure_regulation(reg_type, REG_DIR, Start, Duration, t_res, sine_freq):
     REG_SIGNAL = pd.Series(np.sin(2 * np.pi * sine_freq * elapsed_minutes),
                            index=sim_times)
     return REG_SIGNAL
+
+
+def apply_device_parameters(
+    config,
+    device_type,
+    parameters,
+    input_dir,
+):
+    settings = copy.deepcopy(config)
+
+    device_flags = {
+        "HPWH": "WH_SIMULATION",
+        "ERWH": "WH_SIMULATION",
+        "HVAC": "HVAC_SIMULATION",
+        "EV": "EV_SIMULATION",
+        "Dryer": "DRYER_SIMULATION",
+    }
+
+    if device_type not in device_flags:
+        raise ValueError(f"Unknown device type: {device_type}")
+
+    if not isinstance(parameters, dict):
+        raise TypeError("device_parameters must be a dictionary")
+
+    for section in (
+        "physical", "controller", "control", "interoperability"
+    ):
+        if not isinstance(parameters.get(section, {}), dict):
+            raise TypeError(f"{section} must be a dictionary")
+
+    settings["DEVICE_TYPE"] = device_type
+    settings["DEVICE_PARAMETERS"] = copy.deepcopy(parameters)
+
+    # Select which end use participates in the study.
+    # OFF does not remove other equipment from the dwelling.
+    for flag in set(device_flags.values()) | {"BATTERY_SIMULATION"}:
+        settings[flag] = "OFF"
+
+    settings[device_flags[device_type]] = "ON"
+
+    # B_Common expects the directory containing building folders.
+    prepared_dir = Path(input_dir)
+    building_dir = prepared_dir / "bldg"
+
+    if building_dir.is_dir():
+        prepared_dir = building_dir
+
+    if not prepared_dir.is_dir():
+        raise FileNotFoundError(prepared_dir)
+
+    settings["INPUT_DIR"] = str(prepared_dir.resolve())
+
+    controller = parameters.get("controller", {})
+
+    def numeric(key, minimum, allow_equal=True):
+        value = controller.get(key)
+        if value is None:
+            return None
+
+        if isinstance(value, bool):
+            raise ValueError(f"{key} must be numeric")
+
+        value = float(value)
+
+        if not np.isfinite(value):
+            raise ValueError(f"{key} must be finite")
+
+        invalid = (
+            value < minimum if allow_equal else value <= minimum
+        )
+        if invalid:
+            raise ValueError(f"Invalid {key}: {value}")
+
+        return value
+
+    response_s = numeric("response_time_s", 0)
+    if response_s is not None:
+        settings["DEVICE_RESPONSE_TIME_S"] = response_s
+
+    interval_s = numeric(
+        "control_interval_s", 0, allow_equal=False
+    )
+    if interval_s is not None:
+        timestep_s = float(settings["t_res"]) * 60.0
+
+        # Round upward: never update faster than requested.
+        settings["CONTROL_INTERVAL_STEPS"] = max(
+            1, int(np.ceil(interval_s / timestep_s))
+        )
+
+        settings["EFFECTIVE_CONTROL_INTERVAL_S"] = (
+            settings["CONTROL_INTERVAL_STEPS"] * timestep_s
+        )
+
+    if device_type in {"HPWH", "ERWH"}:
+        # Use the top tank node to check the minimum service temperature.
+        # This is a zero-based index into OCHRE's tank temperature states.
+        settings["WH_SERVICE_NODE_INDEX"] = 0
+        settings["WH_LIMIT_MARGIN_C"] = 0.0
+        minimum_f = controller.get("min_water_temperature_f")
+        maximum_f = controller.get("max_water_temperature_f")
+
+        def temperature(value):
+            if isinstance(value, bool):
+                raise ValueError("Temperature must be numeric")
+            value = float(value)
+            if not np.isfinite(value):
+                raise ValueError("Temperature must be finite")
+            return value
+
+        if minimum_f is not None:
+            minimum_f = temperature(minimum_f)
+            settings["WH_MIN_TEMPERATURE_C"] = (
+                minimum_f - 32.0
+            ) * 5.0 / 9.0
+
+        if maximum_f is not None:
+            maximum_f = temperature(maximum_f)
+            settings["WH_MAX_TEMPERATURE_C"] = (
+                maximum_f - 32.0
+            ) * 5.0 / 9.0
+
+        if (
+            minimum_f is not None
+            and maximum_f is not None
+            and minimum_f >= maximum_f
+        ):
+            raise ValueError(
+                "Minimum water temperature must be below maximum"
+            )
+
+    return settings

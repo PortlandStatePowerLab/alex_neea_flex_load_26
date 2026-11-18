@@ -12,6 +12,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+import sys
+from tqdm import tqdm
+
 RESULTS_DIR = Path(__file__).resolve().parent / "Results"
 RUN_DIR = None  # Set a specific result folder here, or use --run-dir.
 
@@ -87,36 +90,60 @@ def parse_run(run_dir):
     frames = {"baseline": load_results(baseline_directory(run_dir) / "baseline.csv"),
               "controlled": load_results(run_dir / "controlled.csv")}
     base, ctrl = frames.values()
+    # B2 exports only its regulation window; B1 retains the full reporting day.
+    # Limit by window boundaries, not by matching keys, so missing samples
+    # inside that window (or missing homes) still fail validation below.
+    window_start, window_end = ctrl["Time"].min(), ctrl["Time"].max()
+    base = base.loc[base["Time"].between(window_start, window_end)].copy()
+    frames["baseline"] = base
     base_keys = pd.MultiIndex.from_frame(base[["Home", "Time"]]).sort_values()
     ctrl_keys = pd.MultiIndex.from_frame(ctrl[["Home", "Time"]]).sort_values()
     if not base_keys.equals(ctrl_keys):
-        raise ValueError("Baseline and controlled results have different Home/Time samples")
+        raise ValueError(
+            "Baseline and controlled results have different Home/Time samples "
+            f"within the regulation window {window_start} to {window_end}: "
+            f"{len(base_keys.difference(ctrl_keys))} baseline-only samples, "
+            f"{len(ctrl_keys.difference(base_keys))} controlled-only samples"
+        )
     output_dir = run_dir / "Ready_data"
     output_dir.mkdir(exist_ok=True)
     tables = {}
-    for column, (suffix, _) in METRICS.items():
-        available = [column in frame and frame[column].notna().any()
-                     for frame in frames.values()]
-        if not all(available):
-            if any(available):
-                print(f"Skipping {column}: no values in one of the two runs.")
-            continue
-        pair = {}
-        for kind, frame in frames.items():
-            # Full timestamps preserve day boundaries and sub-minute resolution.
-            table = frame.pivot(index="Home", columns="Time", values=column).sort_index(axis=1)
-            table.to_csv(output_dir / f"{run_dir.name}_{kind}_{suffix}.csv")
-            pair[kind] = table
-        tables[column] = pair
-    print(f"Per-home tables saved to: {output_dir}")
+    with tqdm(
+        METRICS.items(),
+        total=len(METRICS),
+        desc="C1 preparing data tables",
+        unit="metric",
+        file=sys.__stderr__,
+        dynamic_ncols=True,
+        bar_format=(
+            "{desc}: {percentage:3.0f}%|{bar}| "
+            "{n_fmt}/{total_fmt} "
+            "[Elapsed: {elapsed} | ETR: {remaining}]"
+        ),
+    ) as progress:
+        for column, (suffix, _) in progress:
+            available = [column in frame and frame[column].notna().any()
+                        for frame in frames.values()]
+            if not all(available):
+                # if any(available):
+                    # print(f"Skipping {column}: no values in one of the two runs.")
+                continue
+            pair = {}
+            for kind, frame in frames.items():
+                # Full timestamps preserve day boundaries and sub-minute resolution.
+                table = frame.pivot(index="Home", columns="Time", values=column).sort_index(axis=1)
+                table.to_csv(output_dir / f"{run_dir.name}_{kind}_{suffix}.csv")
+                pair[kind] = table
+            tables[column] = pair
+    # print(f"Per-home tables saved to: {output_dir}")
     return tables
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--run-dir", type=Path, default=RUN_DIR)
-    args = parser.parse_args()
-    parse_run(select_run(args.run_dir))
+def main(run_dir=None):
+    # parser = argparse.ArgumentParser(description=__doc__)
+    # parser.add_argument("--run-dir", type=Path, default=RUN_DIR)
+    # args = parser.parse_args()
+    parse_run(select_run(run_dir))
 
 
 if __name__ == "__main__":

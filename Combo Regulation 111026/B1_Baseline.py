@@ -20,6 +20,129 @@ import hashlib
 import uuid
 import copy
 from time import perf_counter
+from tqdm import tqdm
+
+import sys
+import threading
+
+import warnings
+
+warnings.filterwarnings("ignore")
+
+
+class OCHREOutputFilter:
+    """
+    Suppress OCHRE's normal console output while preserving:
+      - user/application output
+      - WARNING/ERROR tracebacks
+      - simulation progress messages
+    """
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.lock = threading.Lock()
+        self.local = threading.local()
+
+    def write(self, text):
+        if not text:
+            return 0
+
+        if not hasattr(self.local, "buffer"):
+            self.local.buffer = ""
+
+        self.local.buffer += text
+
+        while "\n" in self.local.buffer:
+
+            line, self.local.buffer = (
+                self.local.buffer.split("\n", 1)
+            )
+
+            if self._suppress(line):
+                continue
+
+            with self.lock:
+                self.stream.write(line + "\n")
+                self.stream.flush()
+
+        return len(text)
+
+    def flush(self):
+        if hasattr(self.local, "buffer"):
+
+            if self.local.buffer:
+                line = self.local.buffer
+
+                if not self._suppress(line):
+                    with self.lock:
+                        self.stream.write(line)
+                        self.stream.flush()
+
+                self.local.buffer = ""
+
+        self.stream.flush()
+
+    def _suppress(self, line):
+
+        stripped = line.strip()
+
+        if not stripped:
+            return False
+
+        upper_line = stripped.upper()
+
+        # --------------------------------------------------------
+        # Suppress all explicit WARNING messages
+        # --------------------------------------------------------
+
+        if "WARNING:" in upper_line:
+            return True
+
+        if "Removing previous results file:" in stripped:
+            return True
+
+        if "HPWH All Portland Input Files" in stripped:
+            return True
+
+        # --------------------------------------------------------
+        # Suppress OCHRE initialization/status messages
+        # --------------------------------------------------------
+
+        if "OCHRE V" in upper_line:
+            return True
+
+        if stripped == "Dwelling Initialized":
+            return True
+
+        if stripped.startswith("Initializing Base_"):
+            return True
+
+        if stripped.startswith("Initializing Ctrl_"):
+            return True
+
+        if stripped == "Skipping":
+            return True
+
+        if ("baseline_bldg" in stripped or "controlled_bldg" in stripped) and "2018-" in stripped:
+            return True
+
+        if "OCHREException" in stripped:
+            return True
+
+        # OCHRE dwelling timestamp/status lines
+        if (
+            ("Base_bldg" in stripped or "Ctrl_bldg" in stripped)
+            and "2018-" in stripped
+        ):
+            return True
+
+        return False
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+sys.stdout = OCHREOutputFilter(sys.stdout)
+sys.stderr = OCHREOutputFilter(sys.stderr)
+
 
 
 # Settings and reusable setup are owned by B_Common.
@@ -31,7 +154,34 @@ except ImportError:
     import B_Common as common
     from B_ControlSignals import control_for_home
 
-CONFIG = common.load_configuration()
+CONFIG = None
+
+
+def config_loading(
+    Season,
+    Weekday,
+    REG_TYPE,
+    Output_Folder,
+    device_type,
+    device_parameters,
+    input_dir,
+):
+    global CONFIG
+
+    config = common.load_configuration(
+        Season, Weekday, REG_TYPE, Output_Folder
+    )
+
+    CONFIG = common.apply_device_parameters(
+        config,
+        device_type,
+        device_parameters,
+        input_dir,
+    )
+
+    # CONFIG["NUM_HOMES"] = 15
+    # CONFIG["MIN_INITIALIZED_HOMES"] = 10
+    return CONFIG
 # create_home_schedule = common.create_home_schedule
 count = 0
 
@@ -226,43 +376,11 @@ def _capacity_number(value):
 
 
 def estimate_wh_regulation_capacity_kw(home, wh, settings=None):
-    """Approximate LU/S headroom (kW), without changing the water heater.
-
-    Uses conservative node-temperature checks for the existing setpoint-only
-    commands. This is not guaranteed response or a sustained-energy estimate.
-    """
     settings = CONFIG if settings is None else settings
-    power = _capacity_number(getattr(wh, "electric_kw", None))
-    model = getattr(wh, "model", None)
-    temps = np.asarray(getattr(model, "states", []), dtype=float)
-    if power is None or not temps.size or not np.isfinite(temps).all():
-        return 0.0, 0.0
-    if not getattr(wh, "is_electric", False) or getattr(wh, "is_gas", False):
-        return 0.0, 0.0
 
-    load_sp = _capacity_number(settings.get("WH_Tcontrol_LOADC"))
-    load_db = _capacity_number(settings.get("WH_Tcontrol_LOADdeadbandC"))
-    shed_sp = _capacity_number(settings.get("WH_Tcontrol_SHEDC"))
-    if None in (load_sp, load_db, shed_sp):
-        return 0.0, 0.0
-    power = max(0.0, power)
-    up = 0.0
-    if hasattr(wh, "hp_capacity") and not getattr(wh, "er_only_mode", False):
-        capacity = _capacity_number(wh.hp_capacity)
-        efficiency = _capacity_number(getattr(wh, "hp_cop", None))
-        auxiliary = _capacity_number(getattr(wh, "fan_power", 0.0))
-    else:
-        capacity = _capacity_number(getattr(wh, "capacity_rated", None))
-        efficiency = _capacity_number(getattr(wh, "efficiency", None))
-        auxiliary = 0.0
-    if (capacity is not None and efficiency is not None and efficiency > 0
-            and auxiliary is not None and temps.max() < load_sp - load_db):
-        on_kw = (capacity / efficiency + auxiliary) / 1000
-        up = max(0.0, on_kw - power)
-    # S changes the thermostat; it does not force Load Fraction to zero.
-    down = power if temps.min() > shed_sp else 0.0
-    return up, down
-
+    return common.estimate_wh_regulation_capacity_kw(
+        home, wh, settings
+    )
 
 def _estimate_hvac_capacity_kw(home, equipment, settings, heating):
     """Approximate LU/S headroom from thermostat thresholds and current rating."""
@@ -399,6 +517,17 @@ def _file_hash(path):
 def _run_baseline(run_dir, manifest):
     started = perf_counter()
     homes = find_all_homes(CONFIG["INPUT_DIR"])
+
+    requested_homes = CONFIG.get("NUM_HOMES")
+    if requested_homes is not None:
+        if (
+            isinstance(requested_homes, bool)
+            or not isinstance(requested_homes, int)
+            or requested_homes <= 0
+        ):
+            raise ValueError("NUM_HOMES must be a positive integer")
+
+        homes = homes[:requested_homes]
     if not homes:
         raise RuntimeError(f"No valid homes in {CONFIG['INPUT_DIR']}")
     # No example homes are copied into the selected fleet.
@@ -412,38 +541,50 @@ def _run_baseline(run_dir, manifest):
     failure_limit = len(homes) - minimum_homes
     manifest["minimum_initialized_homes"] = minimum_homes
     manifest["initialization_failure_limit"] = failure_limit
-    if failure_limit <= 0:
+    if failure_limit < 0:
         raise RuntimeError(f"Initialization canceled: {len(homes)} homes available; "
-                           f"the configured rule requires more than {minimum_homes} successful homes")
+                           f"the configured rule requires at least {minimum_homes} successful homes")
     fleet_data = []
-    print(f"Initializing {len(homes)} homes serially...", flush=True)
-    for i, home in enumerate(homes, 1):
-        result = init_fleet_worker(home)
-        if not result["success"]:
-            manifest["initialization_failures"].append({"path": str(Path(home).resolve()), "error": result["error"]})
-            failed_count = len(manifest["initialization_failures"])
-            print(f"Skipping {Path(home).name}: {result['error']} "
-                  f"({failed_count}/{failure_limit} initialization failures)", flush=True)
-            if failed_count > failure_limit:
-                raise RuntimeError(f"Initialization canceled: {failed_count} homes failed "
-                                   f"(limit {len(homes)} - {minimum_homes} = {failure_limit}). "
-                                   f"Last failure: {result['error']}")
-            continue
-        fleet_data.append(result)
-        manifest["homes"].append({
-            "name": Path(home).name, "path": str(Path(home).resolve()),
-            "xml_sha256": _file_hash(Path(home) / CONFIG["XML_ADDRESS"]),
-            "schedule_sha256": _file_hash(Path(home) / CONFIG["CSV_ADDRESS"]),
-            "prepared_schedule_sha256": _file_hash(Path(home) / "baseline_schedules.csv"),
-            "home_info": result["home_info"],
-        })
-        if i == 1 or i % 20 == 0 or i == len(homes):
-            print(f"Processed {i}/{len(homes)} homes; {len(fleet_data)} initialized", flush=True)
+    # print(f"Initializing {len(homes)} homes serially...", flush=True)
+    with tqdm(
+        total=len(homes),
+        desc="B1 initializing homes",
+        unit="home",
+        file=sys.__stderr__,
+        dynamic_ncols=True,
+        bar_format=(
+            "{desc}: {percentage:3.0f}%|{bar}| "
+            "{n_fmt}/{total_fmt} "
+            "[Elapsed: {elapsed} | ETR: {remaining}]"
+        ),
+    ) as progress:
+        for i, home in enumerate(homes, 1):
+            result = init_fleet_worker(home)
+            if not result["success"]:
+                manifest["initialization_failures"].append({"path": str(Path(home).resolve()), "error": result["error"]})
+                failed_count = len(manifest["initialization_failures"])
+                # print(f"Skipping {Path(home).name}: {result['error']} "
+                #     f"({failed_count}/{failure_limit} initialization failures)", flush=True)
+                if failed_count > failure_limit:
+                    raise RuntimeError(f"Initialization canceled: {failed_count} homes failed "
+                                    f"(limit {len(homes)} - {minimum_homes} = {failure_limit}). "
+                                    f"Last failure: {result['error']}")
+                progress.update(1)
+                continue
+            fleet_data.append(result)
+            manifest["homes"].append({
+                "name": Path(home).name, "path": str(Path(home).resolve()),
+                "xml_sha256": _file_hash(Path(home) / CONFIG["XML_ADDRESS"]),
+                "schedule_sha256": _file_hash(Path(home) / CONFIG["CSV_ADDRESS"]),
+                "prepared_schedule_sha256": _file_hash(Path(home) / "baseline_schedules.csv"),
+                "home_info": result["home_info"],
+            })
+            progress.update(1)
     if not fleet_data:
         raise RuntimeError("No homes initialized successfully; cannot simulate an empty fleet")
     homes = [home["path"] for home in fleet_data]
-    print(f"Initialization complete: {len(homes)} successful, "
-          f"{len(manifest['initialization_failures'])} skipped", flush=True)
+    # print(f"Initialization complete: {len(homes)} successful, "
+        #   f"{len(manifest['initialization_failures'])} skipped", flush=True)
     sim_times = pd.DatetimeIndex(fleet_data[0]["base"].sim_times)
     if sim_times.empty or sim_times.hasnans or not sim_times.is_unique:
         raise ValueError("Invalid simulation time grid")
@@ -470,8 +611,22 @@ def _run_baseline(run_dir, manifest):
     rows = []
     simulation_started = perf_counter()
     manifest["timings_seconds"] = {"setup": simulation_started - started}
-    progress_interval = max(1, round(60 / CONFIG["t_res"]))
-    with common.numerical_threads(CONFIG), common.fleet_executor(CONFIG) as executor:
+    with (
+        common.numerical_threads(CONFIG),
+        common.fleet_executor(CONFIG) as executor,
+        tqdm(
+            total=len(sim_times),
+            desc="B1 baseline simulation",
+            unit="step",
+            file=sys.__stderr__,
+            dynamic_ncols=True,
+            bar_format=(
+                "{desc}: {percentage:3.0f}%|{bar}| "
+                "{n_fmt}/{total_fmt} "
+                "[Elapsed: {elapsed} | ETR: {remaining}]"
+            ),
+        ) as progress,
+    ):
         for step, sim_time in enumerate(sim_times, 1):
             results = common.step_fleet(executor, update_home_worker, fleet_data, sim_time)
             for home, result in zip(fleet_data, results):
@@ -485,8 +640,7 @@ def _run_baseline(run_dir, manifest):
                     home["base"].results.clear()
             # Warm-up states are needed, but their capacity rows are discarded.
             if sim_time < output_times[0]:
-                if step % progress_interval == 0:
-                    print(f"Completed {step}/{len(sim_times)} steps (warm-up)", flush=True)
+                progress.update(1)
                 continue
             up, down, details = estimate_baseline_regulation_capacity_kw(fleet_data, return_details=True)
             row = {"Time": sim_time, "Up Capacity (kW)": up,
@@ -495,30 +649,41 @@ def _run_baseline(run_dir, manifest):
                 row[f"{device} Up Capacity (kW)"] = values["up_kw"]
                 row[f"{device} Down Capacity (kW)"] = values["down_kw"]
             rows.append(row)
-            if step % progress_interval == 0 or step == len(sim_times):
-                print(f"Completed {step}/{len(sim_times)} steps; "
-                      f"elapsed {perf_counter() - simulation_started:.0f}s", flush=True)
+            progress.update(1)
     export_started = perf_counter()
     manifest["timings_seconds"]["simulation"] = export_started - simulation_started
     required_by_home = {}
-    for home in fleet_data:
-        name = Path(home["path"]).name
-        frame, _, _ = home["base"].finalize()
-        required = ["Total Electric Power (kW)", "Total Electric Energy (kWh)"]
-        for end_use in home["home_info"]["participating_end_uses"]:
-            required.append(end_use + " Electric Power (kW)")
-        for end_use in ("EV", "Battery"):
-            if end_use in home["home_info"]["participating_end_uses"]:
-                required.append(end_use + " SOC (-)")
+    with tqdm(
+        total=len(fleet_data),
+        desc="B1 finalizing homes",
+        unit="home",
+        file=sys.__stderr__,
+        dynamic_ncols=True,
+        bar_format=(
+            "{desc}: {percentage:3.0f}%|{bar}| "
+            "{n_fmt}/{total_fmt} "
+            "[Elapsed: {elapsed} | ETR: {remaining}]"
+        ),
+    ) as progress:
+        for home in fleet_data:
+            name = Path(home["path"]).name
+            frame, _, _ = home["base"].finalize()
+            required = ["Total Electric Power (kW)", "Total Electric Energy (kWh)"]
+            for end_use in home["home_info"]["participating_end_uses"]:
+                required.append(end_use + " Electric Power (kW)")
+            for end_use in ("EV", "Battery"):
+                if end_use in home["home_info"]["participating_end_uses"]:
+                    required.append(end_use + " SOC (-)")
 
-        frame = restore_time_column(frame, name)
-        frame = remove_first_day(frame, CONFIG["Start"])
-        frame = validate_results(frame, output_times, name, required)
-        # Retain temperatures and other diagnostics in addition to required power.
-        destination = run_dir / "homes" / name
-        destination.mkdir(parents=True)
-        frame.to_csv(destination / "home_baseline.csv", index=False)
-        required_by_home[name] = required
+            frame = restore_time_column(frame, name)
+            frame = remove_first_day(frame, CONFIG["Start"])
+            frame = validate_results(frame, output_times, name, required)
+            # Retain temperatures and other diagnostics in addition to required power.
+            destination = run_dir / "homes" / name
+            destination.mkdir(parents=True)
+            frame.to_csv(destination / "home_baseline.csv", index=False)
+            required_by_home[name] = required
+            progress.update(1)
     baseline_path = aggregate_results(homes, run_dir, output_times, required_by_home)
     capacities = remove_first_day(pd.DataFrame(rows), CONFIG["Start"])
     capacity_path = run_dir / "capacity.csv"
@@ -534,11 +699,13 @@ def _run_baseline(run_dir, manifest):
     }
     manifest["summary"] = summary
     manifest["timings_seconds"]["export"] = perf_counter() - export_started
-    print(f"Run timings (seconds): {manifest['timings_seconds']}", flush=True)
+    # print(f"Run timings (seconds): {manifest['timings_seconds']}", flush=True)
     return summary
 
 
 def main():
+    if CONFIG is None:
+        raise RuntimeError("Call config_loading() before main()")
     minimum_homes = CONFIG["MIN_INITIALIZED_HOMES"]
     if isinstance(minimum_homes, bool) or not isinstance(minimum_homes, int) or minimum_homes < 0:
         raise ValueError("MIN_INITIALIZED_HOMES must be a nonnegative integer")
@@ -554,9 +721,9 @@ def main():
         with common.numerical_threads(CONFIG):
             result = _run_baseline(run_dir, manifest)
         manifest["status"] = "complete"
-        print(f"Baseline saved: {result['baseline_path']}", flush=True)
-        print(f"B2 --baseline-run-id {run_id} will save into the same results folder.", flush=True)
-        return result
+        # print(f"Baseline saved: {result['baseline_path']}", flush=True)
+        # print(f"B2 --baseline-run-id {run_id} will save into the same results folder.", flush=True)
+        return result, run_id
     except Exception as exc:
         manifest.update(status="failed", error=repr(exc))
         raise

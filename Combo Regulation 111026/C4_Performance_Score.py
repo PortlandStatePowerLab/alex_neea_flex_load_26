@@ -15,6 +15,9 @@ Run directly for the latest completed pair or pass --run-dir / --run-id.
 from pathlib import Path
 import json
 
+import sys
+from tqdm import tqdm
+
 try:
     from .C3_Normalized_Regulation import resolve_run, load_tracking
 except ImportError:
@@ -89,8 +92,10 @@ def load_vpp_data(path):
         "Up Regulation Capacity (kW)",
         "Down Regulation Capacity (kW)",
     ]
-    if (df[capacity_columns] <= 0).any().any():
-        raise ValueError("Up and down regulation capacities must remain greater than zero.")
+    if (df[capacity_columns] < 0).any().any():
+        raise ValueError("Up and down regulation capacities must be nonnegative.")
+    if not (df[capacity_columns] > 0).any().any():
+        raise ValueError("VPP log has no positive regulation capacity in either direction.")
 
     # Infer the actual simulation timestep from timestamps.
     diffs_seconds = df["Time"].diff().dt.total_seconds().dropna()
@@ -220,7 +225,12 @@ def pjm_delay_corr(target, actual, timestamp, t_res):
 
 
 def pjm_precision(target, actual, up_reg_cap_kw, dwn_reg_cap_kw):
-    """Calculate direction-aware precision for the asymmetric Combo fleet."""
+    """Calculate direction-aware precision for the asymmetric Combo fleet.
+
+    Research convention for a zero-capacity direction: matching the target
+    incurs zero error; any mismatch above 1e-9 kW incurs full error. Keep these
+    samples in the average rather than dropping unavailable-direction errors.
+    """
     pair = pd.concat(
         [
             target.rename("target"),
@@ -247,10 +257,12 @@ def pjm_precision(target, actual, up_reg_cap_kw, dwn_reg_cap_kw):
         ),
     )
 
-    if not np.isfinite(capacity).all() or (capacity <= 0).any():
+    if not np.isfinite(capacity).all() or (capacity < 0).any():
         return np.nan
 
-    normalized_error = (pair["target"] - pair["actual"]).abs().to_numpy() / capacity
+    absolute_error = (pair["target"] - pair["actual"]).abs().to_numpy()
+    normalized_error = np.where(absolute_error <= 1e-9, 0.0, 1.0)
+    np.divide(absolute_error, capacity, out=normalized_error, where=capacity > 0)
     return float(np.clip(1.0 - normalized_error.mean(), 0.0, 1.0))
 
 
@@ -263,8 +275,23 @@ def main(run_dir=None, run_id=None):
     indexed = df.set_index("Time")
     target = indexed["Target Delta (kW)"]
     actual = indexed["Actual Fleet Delta (kW)"]
-    for timestamp in target.index:
-        delay_corr.append(pjm_delay_corr(target, actual, timestamp, t_res))
+    with tqdm(
+        target.index,
+        total=len(target),
+        desc="C4 calculating delay and correlation",
+        unit="sample",
+        file=sys.__stderr__,
+        dynamic_ncols=True,
+        bar_format=(
+            "{desc}: {percentage:3.0f}%|{bar}| "
+            "{n_fmt}/{total_fmt} "
+            "[Elapsed: {elapsed} | ETR: {remaining}]"
+        ),
+    ) as progress:
+        for timestamp in progress:
+            delay_corr.append(
+                pjm_delay_corr(target, actual, timestamp, t_res)
+            )
 
     delay_corr_df = pd.DataFrame(delay_corr, index=target.index)
     hourly_scores = []
@@ -326,6 +353,7 @@ def main(run_dir=None, run_id=None):
         "precision_score": float(mean_components[2]),
         "zero_lag_correlation": float(straight_corr) if np.isfinite(straight_corr) else None,
         "scoring_window_minutes": SCORING_WINDOW_MINUTES,
+        "zero_capacity_precision_policy": "zero error if matched within 1e-9 kW; full error otherwise",
         "timestep_minutes": t_res, "hours_scored": len(hourly_scores),
         "method": "PJM-style; retained HPWH C4 algorithm, not official market scoring",
     }

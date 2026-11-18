@@ -12,6 +12,10 @@ from pathlib import Path
 import re
 import random 
 import pandas as pd
+from copy import deepcopy
+import math
+import sys
+from tqdm import tqdm
 
 # ---------------------------------------------------------
 # DIRECTORY SETUP
@@ -25,8 +29,8 @@ OUTPUT_DIR = FL_DIR / "Combo All Input Files"
 
 METADATA_DIR = FL_DIR / "Metadata" / "OR_upgrade0.csv"
 # Load metadata once globally
-metadata_df = pd.read_csv(METADATA_DIR, low_memory=False)
-print(metadata_df)
+# metadata_df = pd.read_csv(METADATA_DIR, low_memory=False)
+# print(metadata_df)
 
 DEVICES = {
     "device_conversion": {
@@ -310,7 +314,7 @@ def parse_charge_fraction(val):
     if '0-19' in val: return 0.1
     return 0.9 # Default fallback
 
-def get_building_metadata(bldg_id):
+def get_building_metadata(bldg_id, metadata_df):
     try:
         row = metadata_df[metadata_df['bldg_id'] == int(bldg_id)]
     except KeyError:
@@ -569,8 +573,13 @@ def convert_HVAC(root, config):
         hp_type.text = conv["HeatPumpType"]
         
         ET.SubElement(hp, f'{ns}HeatPumpFuel').text = 'electricity'
-        ET.SubElement(hp, f'{ns}HeatingCapacity').text = str(conv["Capacity"])
-        ET.SubElement(hp, f'{ns}CoolingCapacity').text = str(conv["Capacity"])
+        ET.SubElement(
+            hp, f"{ns}HeatingCapacity"
+        ).text = str(conv["HeatingCapacity"])
+
+        ET.SubElement(
+            hp, f"{ns}CoolingCapacity"
+        ).text = str(conv["CoolingCapacity"])
         ET.SubElement(hp, f'{ns}CompressorType').text = conv["CompressorType"]
         
         # Lockout temps and sensible heat fraction (Required by OCHRE/HPXML)
@@ -611,7 +620,9 @@ def convert_HVAC(root, config):
                 ET.SubElement(pdp, f'{ns}OutdoorTemperature').text = str(pt["Temp"])
                 
                 # Multiply constant capacity ratio by configured max capacity
-                calc_capacity = round(conv["Capacity"] * pt["CapacityRatio"], 1)
+                calc_capacity = round(
+                    conv["CoolingCapacity"] * pt["CapacityRatio"], 1
+                )
                 ET.SubElement(pdp, f'{ns}Capacity').text = str(calc_capacity)
                 ET.SubElement(pdp, f'{ns}CapacityDescription').text = pt["Desc"]
                 
@@ -626,7 +637,9 @@ def convert_HVAC(root, config):
                 ET.SubElement(pdp, f'{ns}OutdoorTemperature').text = str(pt["Temp"])
                 
                 # Multiply constant capacity ratio by configured max capacity
-                calc_capacity = round(conv["Capacity"] * pt["CapacityRatio"], 1)
+                calc_capacity = round(
+                    conv["HeatingCapacity"] * pt["CapacityRatio"], 1
+                )
                 ET.SubElement(pdp, f'{ns}Capacity').text = str(calc_capacity)
                 ET.SubElement(pdp, f'{ns}CapacityDescription').text = pt["Desc"]
                 
@@ -809,8 +822,8 @@ def convert_dryer(root, config):
                 ET.SubElement(new_circuit, f'{ns}AttachedToComponent', idref=dryer_id)
 
 
-def add_ev_components(root, ns, ns_bracket, bldg_id, config):
-    meta = get_building_metadata(bldg_id)
+def add_ev_components(root, ns, ns_bracket, bldg_id, config, metadata_df):
+    meta = get_building_metadata(bldg_id, metadata_df)
     if meta is None:
         # print(f"[Warning] Bldg {bldg_id}: Metadata row check failed. Skipping.")
         return
@@ -999,7 +1012,7 @@ def add_ev_components(root, ns, ns_bracket, bldg_id, config):
         
     # print(f"[Success] Bldg {bldg_id}: Successfully processed EV components.")
 
-def convert_ev(root, xml_filename, config):
+def convert_ev(root, xml_filename, config, metadata_df):
     """Parses bldg_id from the parent folder name and routes to ev component adder"""
     ns_match = re.match(r'\{.*\}', root.tag)
     ns_bracket = ns_match.group(0) if ns_match else ''
@@ -1013,7 +1026,7 @@ def convert_ev(root, xml_filename, config):
     if match:
         bldg_id = match.group()
         # print(f"\n--- Processing {parent_folder_name}/{xml_filename.name} (Extracted ID: {int(bldg_id)}) ---")
-        add_ev_components(root, ns_bracket, ns_bracket, bldg_id, config)
+        add_ev_components(root, ns_bracket, ns_bracket, bldg_id, config, metadata_df)
     else:
         print(f"[Warning] Could not extract numeric bldg_id from path: {xml_filename}")
 
@@ -1030,7 +1043,7 @@ def duplicate_directories(input_dir, output_dir):
         print(f"Error: Could not find input directory at {input_path.resolve()}")
         return False
 
-    print(f"Copying files from '{input_path.name}' to '{output_path.name}'...")
+    # print(f"Copying files from '{input_path.name}' to '{output_path.name}'...")
     if output_path.exists():
         shutil.copytree(input_path, output_path, dirs_exist_ok=True)
     else:
@@ -1040,58 +1053,499 @@ def duplicate_directories(input_dir, output_dir):
 # ---------------------------------------------------------
 # MAIN EXECUTION BLOCK
 # ---------------------------------------------------------
-if __name__ == "__main__":
-    print("Starting OCHRE HPXML batch update...")
+# if __name__ == "__main__":
+#     print("Starting OCHRE HPXML batch update...")
     
-    # 1. Duplicate the directory once
-    success = duplicate_directories(INPUT_DIR, OUTPUT_DIR)
+#     # 1. Duplicate the directory once
+#     success = duplicate_directories(INPUT_DIR, OUTPUT_DIR)
     
-    if success:
-        # 2. Iterate through the newly created output directory
-        output_path = Path(OUTPUT_DIR)
+#     if success:
+#         # 2. Iterate through the newly created output directory
+#         output_path = Path(OUTPUT_DIR)
         
-        for xml_file in output_path.rglob('*.xml'):
+#         for xml_file in output_path.rglob('*.xml'):
             
-            try:
-                # Dynamically register namespaces
-                for event, (prefix, uri) in ET.iterparse(xml_file, events=['start-ns']):
-                    ET.register_namespace(prefix, uri)
+#             try:
+#                 # Dynamically register namespaces
+#                 for event, (prefix, uri) in ET.iterparse(xml_file, events=['start-ns']):
+#                     ET.register_namespace(prefix, uri)
                 
+#                 tree = ET.parse(xml_file)
+#                 root = tree.getroot()
+                
+#                 # ==========================================
+#                 # TURN UPDATES ON OR OFF HERE
+#                 # ==========================================
+                
+#                 if DEVICES["device_conversion"]["HPWH"] == "ON":
+#                     convert_HPWH(root, HPWH_CONVERSION_CONFIG)
+                
+#                 if DEVICES["device_conversion"]["ERWH"] == "ON":
+#                     convert_ERWH(root, ERWH_CONVERSION_CONFIG)
+
+#                 if DEVICES["device_conversion"]["HVAC"] == "ON":
+#                     convert_HVAC(root, HVAC_CONVERSION_CONFIG)
+
+#                 if DEVICES["device_conversion"]["Dryer"] == "ON":
+#                     convert_dryer(root, DRYER_CONVERSION_CONFIG)
+
+#                 if DEVICES["device_conversion"]["EV"] == "ON":
+#                     convert_ev(root, xml_file, EV_CONVERSION_CONFIG)
+
+                
+#                 # ==========================================
+                
+#                 # Apply pretty-print formatting to the tree
+#                 if hasattr(ET, 'indent'):
+#                     ET.indent(tree, space="  ", level=0)
+
+#                 # Write changes back to the duplicated file
+#                 tree.write(xml_file, encoding='UTF-8', xml_declaration=True)
+                
+#             except ET.ParseError as e:
+#                 print(f"Failed to parse XML for {xml_file}: {e}")
+#             except Exception as e:
+#                 print(f"An error occurred while processing {xml_file}: {e}")
+
+#         print("Batch update complete.")
+
+
+def capability_fields():
+    """Return independent capability dictionaries for each device."""
+    return {
+        "control": {
+            "can_schedule": None,
+            "app_exists": None,
+            "wireless_connection": None,
+            "connect_to_tou_data": None,
+        },
+        "interoperability": {
+            "open_standard": None,
+            "ucm_dcm_ready": None,
+            "compliant": None,
+            "data_conformant": None,
+            "shift_conformant": None,
+        },
+    }
+
+
+device_parameters = {
+    "HPWH": {
+        "physical": {
+            "rated_compressor_power_w": None,
+            "rated_resistance_element_power_w": None,
+            "tank_volume_gal": None,
+            "rated_efficiency": {
+                "type": None,   # "COP" or "UEF"
+                "value": None,
+            },
+            "heating_capacity_btu_per_hr": None,
+        },
+        "controller": {
+            "max_water_temperature_f": None,
+            "min_water_temperature_f": None,
+            "response_time_s": None,
+            "control_interval_s": None,
+        },
+        **capability_fields(),
+    },
+
+    "ERWH": {
+        "physical": {
+            "heating_element_power_w": None,
+            "tank_volume_gal": None,
+            "heating_capacity_btu_per_hr": None,
+        },
+        "controller": {
+            "max_water_temperature_f": None,
+            "min_water_temperature_f": None,
+            "response_time_s": None,
+            "control_interval_s": None,
+        },
+        **capability_fields(),
+    },
+
+    "HVAC": {
+        "physical": {
+            "rated_electrical_power_w": None,
+            "heating_capacity_btu_per_hr": None,
+            "cooling_capacity_btu_per_hr": None,
+            "effective_building_thermal_capacity_kwh_per_f": None,
+        },
+        "controller": {
+            "minimum_modulation_pct": None,
+            "max_indoor_temperature_f": None,
+            "min_indoor_temperature_f": None,
+            "response_time_s": None,
+            "control_interval_s": None,
+        },
+        **capability_fields(),
+    },
+
+    "EV": {
+        "physical": {
+            "rated_charging_power_kw": None,
+            "maximum_battery_capacity_kwh": None,
+            "charging_efficiency_pct": None,
+        },
+        "controller": {
+            "usable_battery_flexibility_pct": None,
+            "response_time_s": None,
+            "control_interval_s": None,
+        },
+        **capability_fields(),
+    },
+
+    "Dryer": {
+        "physical": {
+            "rated_power_kw": None,
+            "cycle_energy_kwh": None,
+            "typical_cycle_duration_min": None,
+        },
+        "controller": {
+            "maximum_deferral_time_min": None,
+            "response_time_s": None,
+            "control_interval_s": None,
+        },
+        **capability_fields(),
+    },
+}
+
+def build_device_config(device_type, parameters):
+    """Translate one device's calculator inputs into an A3 config."""
+    defaults = {
+        "HPWH": HPWH_CONVERSION_CONFIG,
+        "ERWH": ERWH_CONVERSION_CONFIG,
+        "HVAC": HVAC_CONVERSION_CONFIG,
+        "EV": EV_CONVERSION_CONFIG,
+        "Dryer": DRYER_CONVERSION_CONFIG,
+    }
+
+    if device_type not in defaults:
+        raise ValueError(f"Unknown device type: {device_type}")
+
+    if not isinstance(parameters, dict):
+        raise TypeError("parameters must be a dictionary")
+
+    allowed_sections = {
+        "physical", "controller", "control", "interoperability"
+    }
+    unknown_sections = set(parameters) - allowed_sections
+    if unknown_sections:
+        raise ValueError(
+            f"Unknown parameter sections: {sorted(unknown_sections)}"
+        )
+
+    for section in allowed_sections:
+        if not isinstance(parameters.get(section, {}), dict):
+            raise TypeError(f"{section} must be a dictionary")
+
+    config = deepcopy(defaults[device_type])
+    physical = parameters.get("physical", {})
+    applied = {}
+
+    allowed_physical = {
+        "HPWH": {
+            "rated_compressor_power_w",
+            "rated_resistance_element_power_w",
+            "tank_volume_gal",
+            "rated_efficiency",
+            "heating_capacity_btu_per_hr",
+        },
+        "ERWH": {
+            "heating_element_power_w",
+            "tank_volume_gal",
+            "heating_capacity_btu_per_hr",
+        },
+        "HVAC": {
+            "rated_electrical_power_w",
+            "heating_capacity_btu_per_hr",
+            "cooling_capacity_btu_per_hr",
+            "effective_building_thermal_capacity_kwh_per_f",
+        },
+        "EV": {
+            "rated_charging_power_kw",
+            "maximum_battery_capacity_kwh",
+            "charging_efficiency_pct",
+        },
+        "Dryer": {
+            "rated_power_kw",
+            "cycle_energy_kwh",
+            "typical_cycle_duration_min",
+        },
+    }
+
+    unknown = set(physical) - allowed_physical[device_type]
+    if unknown:
+        raise ValueError(
+            f"Unknown {device_type} physical parameters: {sorted(unknown)}"
+        )
+
+    def number(key):
+        value = physical.get(key)
+        if value is None:
+            return None
+
+        if isinstance(value, bool):
+            raise ValueError(f"{key} must be numeric")
+
+        value = float(value)
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{key} must be finite and positive")
+
+        return value
+
+    def assign(target, key, xml_key, multiplier=1.0, as_text=False):
+        value = number(key)
+        if value is None:
+            return
+
+        converted = value * multiplier
+        target[xml_key] = str(converted) if as_text else converted
+        applied[key] = value
+
+    if device_type == "HPWH":
+        conv = config["HPWH_Conversion"]
+
+        assign(conv, "tank_volume_gal", "TankVolume")
+        assign(
+            conv,
+            "heating_capacity_btu_per_hr",
+            "HeatingCapacity",
+        )
+        assign(
+            conv,
+            "rated_resistance_element_power_w",
+            "BackupHeatingCapacity",
+            multiplier=3.412141633,
+        )
+
+        efficiency = physical.get("rated_efficiency")
+        if efficiency is not None:
+            if not isinstance(efficiency, dict):
+                raise TypeError("rated_efficiency must be a dictionary")
+
+            if set(efficiency) - {"type", "value"}:
+                raise ValueError("Unknown rated_efficiency field")
+
+            kind = efficiency.get("type")
+            value = efficiency.get("value")
+
+            if kind is not None or value is not None:
+                if kind not in {"COP", "UEF"} or value is None:
+                    raise ValueError(
+                        "Supply efficiency type COP/UEF and a value"
+                    )
+
+                if isinstance(value, bool):
+                    raise ValueError("Efficiency must be numeric")
+
+                value = float(value)
+                if not math.isfinite(value) or value <= 0:
+                    raise ValueError("Efficiency must be positive")
+
+                if kind == "UEF":
+                    conv["UniformEnergyFactor"] = value
+                    applied["rated_efficiency"] = {
+                        "type": kind,
+                        "value": value,
+                    }
+                # COP remains a runtime input; do not write it as UEF.
+
+    elif device_type == "ERWH":
+        conv = config["ERWH_Conversion"]
+        assign(conv, "tank_volume_gal", "TankVolume")
+
+        element_w = number("heating_element_power_w")
+        capacity = number("heating_capacity_btu_per_hr")
+
+        if element_w is not None:
+            # Use electrical element power as the authoritative input.
+            derived_capacity = element_w * 3.412141633
+
+            if capacity is not None and not math.isclose(
+                capacity, derived_capacity, rel_tol=0.02
+            ):
+                raise ValueError(
+                    "ERWH heating capacity conflicts with element power"
+                )
+
+            conv["HeatingCapacity"] = derived_capacity
+            applied["heating_element_power_w"] = element_w
+
+            if capacity is not None:
+                applied["heating_capacity_btu_per_hr"] = capacity
+
+        elif capacity is not None:
+            conv["HeatingCapacity"] = capacity
+            applied["heating_capacity_btu_per_hr"] = capacity
+
+    elif device_type == "HVAC":
+        conv = config["HVAC_Conversion"]
+
+        # Preserve existing defaults when no override is supplied.
+        conv["HeatingCapacity"] = conv["Capacity"]
+        conv["CoolingCapacity"] = conv["Capacity"]
+
+        assign(
+            conv,
+            "heating_capacity_btu_per_hr",
+            "HeatingCapacity",
+        )
+        assign(
+            conv,
+            "cooling_capacity_btu_per_hr",
+            "CoolingCapacity",
+        )
+
+    elif device_type == "EV":
+        power_kw = number("rated_charging_power_kw")
+        if power_kw is not None:
+            for details in config["ChargerDetails"].values():
+                power_w = power_kw * 1000.0
+                voltage = float(details["Voltage"])
+
+                details["ChargingPower"] = str(power_w)
+                details["MaxCurrentRating"] = str(power_w / voltage)
+
+            applied["rated_charging_power_kw"] = power_kw
+
+        # Battery capacity needs a separate nominal/usable policy.
+        # Keep it in the returned runtime inputs for now.
+
+    elif device_type == "Dryer":
+        assign(
+            config["ServiceFeeder"],
+            "rated_power_kw",
+            "PowerRating",
+            multiplier=1000.0,
+            as_text=True,
+        )
+
+    remaining_physical = {
+        key: deepcopy(value)
+        for key, value in physical.items()
+        if key not in applied
+        and value is not None
+        and not (
+            isinstance(value, dict)
+            and all(v is None for v in value.values())
+        )
+    }
+
+    runtime_parameters = {
+        "physical": remaining_physical,
+        "controller": deepcopy(parameters.get("controller", {})),
+        "control": deepcopy(parameters.get("control", {})),
+        "interoperability": deepcopy(
+            parameters.get("interoperability", {})
+        ),
+    }
+
+    return config, applied, runtime_parameters
+
+
+def main(
+    device_type,
+    parameters,
+    input_dir=INPUT_DIR,
+    output_dir=OUTPUT_DIR,
+    metadata_path=METADATA_DIR,
+):
+    """Copy building inputs and parameterize one flex-load type."""
+    config, applied, runtime_parameters = build_device_config(
+        device_type, parameters
+    )
+
+    input_path = Path(input_dir).resolve()
+    output_path = Path(output_dir).resolve()
+
+    if not input_path.is_dir():
+        raise FileNotFoundError(input_path)
+
+    # Avoid copying a directory into itself or an overlapping tree.
+    if (
+        input_path == output_path
+        or input_path in output_path.parents
+        or output_path in input_path.parents
+    ):
+        raise ValueError("Input and output directories must not overlap")
+
+    # Identify source files before copying so stale output XMLs
+    # from older runs are not included in this run.
+    source_xmls = sorted(input_path.rglob("*.xml"))
+    if not source_xmls:
+        raise ValueError(f"No XML files found in {input_path}")
+
+    metadata_df = None
+    if device_type == "EV":
+        metadata_df = pd.read_csv(metadata_path, low_memory=False)
+
+    if not duplicate_directories(input_path, output_path):
+        raise RuntimeError("Could not copy building input files")
+
+    converters = {
+        "HPWH": convert_HPWH,
+        "ERWH": convert_ERWH,
+        "HVAC": convert_HVAC,
+        "Dryer": convert_dryer,
+    }
+
+    processed_files = 0
+    failures = []
+
+    with tqdm(
+        total=len(source_xmls),
+        desc="A3 preparing XML files",
+        unit="file",
+        file=sys.__stderr__,
+        dynamic_ncols=True,
+        bar_format=(
+            "{desc}: {percentage:3.0f}%|{bar}| "
+            "{n_fmt}/{total_fmt} "
+            "[Elapsed: {elapsed} | ETR: {remaining}]"
+        ),
+    ) as progress:
+        for source_xml in source_xmls:
+            xml_file = output_path / source_xml.relative_to(input_path)
+
+            try:
+                for _, (prefix, uri) in ET.iterparse(
+                    xml_file, events=["start-ns"]
+                ):
+                    ET.register_namespace(prefix, uri)
+
                 tree = ET.parse(xml_file)
                 root = tree.getroot()
-                
-                # ==========================================
-                # TURN UPDATES ON OR OFF HERE
-                # ==========================================
-                
-                if DEVICES["device_conversion"]["HPWH"] == "ON":
-                    convert_HPWH(root, HPWH_CONVERSION_CONFIG)
-                
-                if DEVICES["device_conversion"]["ERWH"] == "ON":
-                    convert_ERWH(root, ERWH_CONVERSION_CONFIG)
 
-                if DEVICES["device_conversion"]["HVAC"] == "ON":
-                    convert_HVAC(root, HVAC_CONVERSION_CONFIG)
+                if device_type == "EV":
+                    convert_ev(
+                        root, xml_file, config, metadata_df
+                    )
+                else:
+                    converters[device_type](root, config)
 
-                if DEVICES["device_conversion"]["Dryer"] == "ON":
-                    convert_dryer(root, DRYER_CONVERSION_CONFIG)
+                ET.indent(tree, space="  ")
+                tree.write(
+                    xml_file,
+                    encoding="UTF-8",
+                    xml_declaration=True,
+                )
+                processed_files += 1
 
-                if DEVICES["device_conversion"]["EV"] == "ON":
-                    convert_ev(root, xml_file, EV_CONVERSION_CONFIG)
+            except (ET.ParseError, OSError, ValueError, KeyError) as exc:
+                failures.append(f"{xml_file}: {exc}")
+            progress.update(1)
 
-                
-                # ==========================================
-                
-                # Apply pretty-print formatting to the tree
-                if hasattr(ET, 'indent'):
-                    ET.indent(tree, space="  ", level=0)
+    if failures:
+        raise RuntimeError(
+            "A3 preparation failed:\n- " + "\n- ".join(failures)
+        )
 
-                # Write changes back to the duplicated file
-                tree.write(xml_file, encoding='UTF-8', xml_declaration=True)
-                
-            except ET.ParseError as e:
-                print(f"Failed to parse XML for {xml_file}: {e}")
-            except Exception as e:
-                print(f"An error occurred while processing {xml_file}: {e}")
-
-        print("Batch update complete.")
+    return {
+        "device_type": device_type,
+        "output_dir": str(output_path),
+        "processed_files": processed_files,
+        "parameters_applied": applied,
+        "runtime_parameters_not_applied": runtime_parameters,
+    }

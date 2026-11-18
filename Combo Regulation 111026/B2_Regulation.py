@@ -21,6 +21,126 @@ import uuid
 import copy
 from time import perf_counter
 from ochre.Equipment.EV import EV_EFFICIENCY
+from tqdm import tqdm
+
+import sys
+import threading
+
+import warnings
+
+warnings.filterwarnings("ignore")
+
+
+class OCHREOutputFilter:
+    """
+    Suppress OCHRE's normal console output while preserving:
+      - user/application output
+      - WARNING/ERROR tracebacks
+      - simulation progress messages
+    """
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.lock = threading.Lock()
+        self.local = threading.local()
+
+    def write(self, text):
+        if not text:
+            return 0
+
+        if not hasattr(self.local, "buffer"):
+            self.local.buffer = ""
+
+        self.local.buffer += text
+
+        while "\n" in self.local.buffer:
+
+            line, self.local.buffer = (
+                self.local.buffer.split("\n", 1)
+            )
+
+            if self._suppress(line):
+                continue
+
+            with self.lock:
+                self.stream.write(line + "\n")
+                self.stream.flush()
+
+        return len(text)
+
+    def flush(self):
+        if hasattr(self.local, "buffer"):
+
+            if self.local.buffer:
+                line = self.local.buffer
+
+                if not self._suppress(line):
+                    with self.lock:
+                        self.stream.write(line)
+                        self.stream.flush()
+
+                self.local.buffer = ""
+
+        self.stream.flush()
+
+    def _suppress(self, line):
+
+        stripped = line.strip()
+
+        if not stripped:
+            return False
+
+        upper_line = stripped.upper()
+
+        # --------------------------------------------------------
+        # Suppress all explicit WARNING messages
+        # --------------------------------------------------------
+
+        if "WARNING:" in upper_line:
+            return True
+
+        if "Removing previous results file:" in stripped:
+            return True
+
+        if "HPWH All Portland Input Files" in stripped:
+            return True
+
+        # --------------------------------------------------------
+        # Suppress OCHRE initialization/status messages
+        # --------------------------------------------------------
+
+        if "OCHRE V" in upper_line:
+            return True
+
+        if stripped == "Dwelling Initialized":
+            return True
+
+        if stripped.startswith("Initializing Base_"):
+            return True
+
+        if stripped.startswith("Initializing Ctrl_"):
+            return True
+
+        if ("baseline_bldg" in stripped or "controlled_bldg" in stripped) and "2018-" in stripped:
+            return True
+
+        if "OCHREException" in stripped:
+            return True
+
+        # OCHRE dwelling timestamp/status lines
+        if (
+            ("Base_bldg" in stripped or "Ctrl_bldg" in stripped)
+            and "2018-" in stripped
+        ):
+            return True
+
+        return False
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+sys.stdout = OCHREOutputFilter(sys.stdout)
+sys.stderr = OCHREOutputFilter(sys.stderr)
+
 
 
 # Settings and reusable setup are owned by B_Common.
@@ -32,7 +152,40 @@ except ImportError:
     import B_Common as common
     from B_ControlSignals import control_for_home, determine_control, DEVICE_END_USES
 
-CONFIG = common.load_configuration()
+CONFIG = None
+
+
+def config_loading(
+    Season,
+    Weekday,
+    REG_TYPE,
+    Output_Folder,
+    device_type,
+    device_parameters,
+    input_dir,
+    regulation_start_time=None,
+    regulation_duration_minutes=None,
+):
+    global CONFIG
+
+    config = common.load_configuration(
+        Season, Weekday, REG_TYPE, Output_Folder
+    )
+
+    CONFIG = common.apply_device_parameters(
+        config,
+        device_type,
+        device_parameters,
+        input_dir,
+    )
+
+    # Optional clock time on B1's reporting day (day two).
+    CONFIG["REGULATION_START_TIME"] = regulation_start_time
+    CONFIG["REGULATION_DURATION_MINUTES"] = regulation_duration_minutes
+
+    # B1's saved manifest defines the fleet and its initialization settings.
+    return CONFIG
+
 # create_home_schedule = common.create_home_schedule
 count = 0
 
@@ -129,6 +282,84 @@ def _action_delta_kw(home, device, mode, sim_time, settings, equipment):
     return float(total)
 
 
+def thermal_mode_allowed(
+    home, device, mode, sim_time, settings
+):
+    """Check water-heater regulation operating limits."""
+    if device != "WH" or mode == "NORMAL":
+        return True
+
+    minimum = settings.get("WH_MIN_TEMPERATURE_C")
+    maximum = settings.get("WH_MAX_TEMPERATURE_C")
+
+    # Preserve existing behavior if no limits were supplied.
+    if minimum is None and maximum is None:
+        return True
+
+    if minimum is None or maximum is None:
+        raise ValueError("Both WH temperature limits are required")
+
+    margin = float(settings.get("WH_LIMIT_MARGIN_C", 0.0))
+    minimum = float(minimum)
+    maximum = float(maximum)
+
+    if (
+        not np.isfinite([minimum, maximum, margin]).all()
+        or margin < 0
+        or minimum + margin >= maximum - margin
+    ):
+        raise ValueError("Invalid WH temperature limits or margin")
+
+    node_index = settings["WH_SERVICE_NODE_INDEX"]
+
+    if (
+        isinstance(node_index, bool)
+        or not isinstance(node_index, int)
+        or node_index < 0
+    ):
+        raise ValueError("Invalid WH service-node index")
+
+    _, equipment = _action_context(
+        home, device, mode, sim_time, settings
+    )
+
+    if not equipment:
+        return False
+
+    for eq in equipment:
+        temperatures = np.asarray(
+            getattr(getattr(eq, "model", None), "states", []),
+            dtype=float,
+        )
+
+        if (
+            temperatures.ndim != 1
+            or temperatures.size <= node_index
+            or not np.isfinite(temperatures).all()
+        ):
+            raise ValueError(
+                "Missing or invalid water-heater node temperatures"
+            )
+
+        service_temperature = float(temperatures[node_index])
+        hottest_temperature = float(temperatures.max())
+
+        if mode == "S":
+            if service_temperature <= minimum + margin:
+                return False
+
+        elif mode == "LU":
+            if hottest_temperature >= maximum - margin:
+                return False
+
+        else:
+            raise ValueError(
+                f"Unsupported regulation mode: {mode}"
+            )
+
+    return True
+
+
 def device_eligibility(home, device, mode, sim_time, settings=None):
     """Whether a NORMAL/LU/S request may activate now.
 
@@ -140,6 +371,10 @@ def device_eligibility(home, device, mode, sim_time, settings=None):
     settings = CONFIG if settings is None else settings
     mode, equipment = _action_context(home, device, mode, sim_time, settings)
     if not equipment:
+        return False
+    if not thermal_mode_allowed(
+        home, device, mode, sim_time, settings
+    ):
         return False
     state = home.get("command_state", {}).get(device, {})
     active = state.get("active_mode", "NORMAL")
@@ -163,6 +398,10 @@ def action_estimation(home, device, mode, sim_time, settings=None):
     """
     settings = CONFIG if settings is None else settings
     mode, equipment = _action_context(home, device, mode, sim_time, settings)
+    if not thermal_mode_allowed(
+        home, device, mode, sim_time, settings
+    ):
+        return 0.0
     state = home.get("command_state", {}).get(device, {})
     if mode == state.get("active_mode", "NORMAL"):
         return 0.0
@@ -206,8 +445,14 @@ def _dispatch_candidates(fleet_data, sim_time, settings):
             if state.get("pending") is not None:
                 continue
             active = state.get("active_mode", "NORMAL")
-            # Release existing commands before considering an opposite mode.
-            modes = ("LU", "S") if active == "NORMAL" else ("NORMAL",)
+
+            # Consider every alternative to the active command.
+            # action_estimation applies operating limits and cycling checks.
+            modes = tuple(
+                mode
+                for mode in ("NORMAL", "LU", "S")
+                if mode != active
+            )
             for mode in modes:
                 delta = action_estimation(home, device, mode, sim_time, settings)
                 if not np.isfinite(delta):
@@ -505,6 +750,37 @@ def dispatch_regulation_signal(fleet_data, reg_sig, previous_actual_delta_kw,
             "actions": selected}
 
 
+def regulation_window(times, config):
+    """Select [start, end) on day two; retain the full OCHRE simulation grid."""
+    times = pd.DatetimeIndex(times)
+    start_text = config.get("REGULATION_START_TIME")
+    minutes = config.get("REGULATION_DURATION_MINUTES")
+    if start_text is None and minutes is None:
+        return times
+    if start_text is None or minutes is None:
+        raise ValueError("Provide both regulation_start_time and regulation_duration_minutes")
+    try:
+        clock = dt.datetime.strptime(start_text, "%H:%M").time()
+        if isinstance(minutes, bool):
+            raise ValueError()
+        minutes = float(minutes)
+    except (TypeError, ValueError):
+        raise ValueError("Use start time HH:MM and a positive duration in minutes") from None
+    if not np.isfinite(minutes) or minutes <= 0:
+        raise ValueError("Regulation duration must be finite and positive")
+    start = times[0].normalize() + pd.Timedelta(hours=clock.hour, minutes=clock.minute)
+    end = start + pd.Timedelta(minutes=minutes)
+    cadence = pd.Timedelta(minutes=config["t_res"])
+    if start < times[0] or end > times[-1] + cadence:
+        raise ValueError("Regulation window must fit within B1's saved reporting period")
+    if (start - times[0]) % cadence or (end - start) % cadence:
+        raise ValueError("Regulation start and duration must align with the simulation timestep")
+    selected = times[(times >= start) & (times < end)]
+    if selected.empty:
+        raise ValueError("Regulation window contains no simulation timestamps")
+    return selected
+
+
 def load_reg_sig(reg_type, CONFIG, sine_freq):
     reg_sig = common.configure_regulation(reg_type, CONFIG["REG_DIR"], CONFIG["Start"], CONFIG["Duration"], CONFIG["t_res"], sine_freq)
 
@@ -528,8 +804,15 @@ def load_baseline_run(run_id):
     if (not names or len(names) != len(set(names)) or len(homes) != len(set(homes))
             or len(names) != manifest["summary"]["homes_simulated"]):
         raise ValueError("Invalid baseline manifest fleet")
-    baseline = pd.read_csv(run_path / "baseline.csv",
-                           usecols=["Time", "Home", "Total Electric Power (kW)"])
+    baseline = pd.read_csv(
+        run_path / "baseline.csv",
+        usecols=[
+            "Time",
+            "Home",
+            "Total Electric Power (kW)",
+            "Water Heating Electric Power (kW)",
+        ],
+    )
     capacity = pd.read_csv(run_path / "capacity.csv")
     times = pd.date_range(manifest["time_start"], periods=manifest["time_steps"],
                           freq=dt.timedelta(minutes=CONFIG["t_res"]))
@@ -539,7 +822,15 @@ def load_baseline_run(run_id):
     if set(baseline["Home"]) != set(names):
         raise ValueError("Baseline CSV homes do not match the manifest")
     for name, frame in baseline.groupby("Home", sort=False):
-        validate_results(frame, times, name, ["Total Electric Power (kW)"])
+        validate_results(
+            frame,
+            times,
+            name,
+            [
+                "Total Electric Power (kW)",
+                "Water Heating Electric Power (kW)",
+            ],
+        )
     capacity = validate_results(capacity, times, "B1 capacity",
                                 ["Up Capacity (kW)", "Down Capacity (kW)", "Homes"])
     if ((capacity[["Up Capacity (kW)", "Down Capacity (kW)"]] < 0).any().any()
@@ -667,6 +958,30 @@ def aggregate_results(homes, work_dir, expected_times, required_by_home):
         homes, work_dir, expected_times, required_by_home, "controlled", validate_results)
 
 
+def temperature_release_modes(home, sim_time, settings):
+    """Return immediate NORMAL releases for prohibited WH modes."""
+    if "WH" not in _dispatch_devices(home):
+        return {}
+
+    state = home.get("command_state", {}).get("WH", {})
+
+    modes_to_check = [
+        state.get("active_mode", "NORMAL"),
+    ]
+
+    pending = state.get("pending")
+    if pending is not None:
+        modes_to_check.append(pending["mode"])
+
+    for mode in modes_to_check:
+        if not thermal_mode_allowed(
+            home, "WH", mode, sim_time, settings
+        ):
+            return {"WH": "NORMAL"}
+
+    return {}
+
+
 def update_home_worker(home_data, sim_time):
     """Apply queued device controls, advance a dwelling, and read equipment states."""
     try:
@@ -674,14 +989,30 @@ def update_home_worker(home_data, sim_time):
         dwelling = home_data["controlled"]
         if dwelling.current_time != sim_time:
             raise ValueError(f"Dwelling time {dwelling.current_time} != {sim_time}")
+        temperature_releases = temperature_release_modes(
+            home_data, sim_time, CONFIG
+        )
+
+        # Preserve other safety rules. NORMAL is the temperature-release
+        # policy here; resolve priorities explicitly if you later add
+        # other WH emergency modes.
+        safety_modes = dict(home_data.get("safety_modes", {}))
+        safety_modes.update(temperature_releases)
         control = control_for_home(
             home_data, CONFIG, sim_time, baseline=False,
             eligible=lambda device, mode: device_eligibility(home_data, device, mode, sim_time),
-            safety_modes=home_data.get("safety_modes"),
+            safety_modes=safety_modes,
             estimated_changes_kw=home_data.get("estimated_changes_kw"))
-        for device, power in home_data.pop("continuous_power_kw", {}).items():
-            if device in home_data.get("safety_modes", {}):
-                continue
+        continuous_commands = home_data.setdefault(
+            "continuous_power_kw", {}
+        )
+
+        # Safety releases must also clear held continuous commands.
+        # Otherwise an old command could return after safety clears.
+        for device in home_data.get("safety_modes", {}):
+            continuous_commands.pop(device, None)
+
+        for device, power in continuous_commands.items():
             if device == "Battery":
                 control["Battery"] = {"P Setpoint": power}
             elif device == "EV":
@@ -724,7 +1055,18 @@ def update_home_worker(home_data, sim_time):
             if hasattr(equipment, "in_event"):
                 state["in_event"] = bool(equipment.in_event)
             devices[name] = state
-        return {"success": True, "controlled_kw": power, "devices": devices}
+        wh_power = _capacity_number(
+            metrics.get("Water Heating Electric Power (kW)")
+        )
+        if wh_power is None:
+            raise ValueError("Missing/nonfinite water-heater power")
+
+        return {
+            "success": True,
+            "controlled_kw": power,
+            "controlled_wh_kw": wh_power,
+            "devices": devices,
+        }
     except Exception as exc:
         return {"success": False, "path": home_data["path"], "error": repr(exc)}
 
@@ -739,43 +1081,11 @@ def _capacity_number(value):
 
 
 def estimate_wh_regulation_capacity_kw(home, wh, settings=None):
-    """Approximate LU/S headroom (kW), without changing the water heater.
-
-    Uses conservative node-temperature checks for the existing setpoint-only
-    commands. This is not guaranteed response or a sustained-energy estimate.
-    """
     settings = CONFIG if settings is None else settings
-    power = _capacity_number(getattr(wh, "electric_kw", None))
-    model = getattr(wh, "model", None)
-    temps = np.asarray(getattr(model, "states", []), dtype=float)
-    if power is None or not temps.size or not np.isfinite(temps).all():
-        return 0.0, 0.0
-    if not getattr(wh, "is_electric", False) or getattr(wh, "is_gas", False):
-        return 0.0, 0.0
 
-    load_sp = _capacity_number(settings.get("WH_Tcontrol_LOADC"))
-    load_db = _capacity_number(settings.get("WH_Tcontrol_LOADdeadbandC"))
-    shed_sp = _capacity_number(settings.get("WH_Tcontrol_SHEDC"))
-    if None in (load_sp, load_db, shed_sp):
-        return 0.0, 0.0
-    power = max(0.0, power)
-    up = 0.0
-    if hasattr(wh, "hp_capacity") and not getattr(wh, "er_only_mode", False):
-        capacity = _capacity_number(wh.hp_capacity)
-        efficiency = _capacity_number(getattr(wh, "hp_cop", None))
-        auxiliary = _capacity_number(getattr(wh, "fan_power", 0.0))
-    else:
-        capacity = _capacity_number(getattr(wh, "capacity_rated", None))
-        efficiency = _capacity_number(getattr(wh, "efficiency", None))
-        auxiliary = 0.0
-    if (capacity is not None and efficiency is not None and efficiency > 0
-            and auxiliary is not None and temps.max() < load_sp - load_db):
-        on_kw = (capacity / efficiency + auxiliary) / 1000
-        up = max(0.0, on_kw - power)
-    # S changes the thermostat; it does not force Load Fraction to zero.
-    down = power if temps.min() > shed_sp else 0.0
-    return up, down
-
+    return common.estimate_wh_regulation_capacity_kw(
+        home, wh, settings
+    )
 
 def _estimate_hvac_capacity_kw(home, equipment, settings, heating):
     """Approximate LU/S headroom from thermostat thresholds and current rating."""
@@ -913,6 +1223,12 @@ def _run_regulation(run_dir, manifest, run_id, sine_freq):
     started = perf_counter()
     baseline_csv, baseline_cap_csv, manifest_baseline, baseline_homes = load_baseline_run(run_id)
     homes = baseline_homes
+    # Reuse the successful baseline fleet, which can be smaller than NUM_HOMES
+    # when B1 permits initialization failures. These are selection settings,
+    # not independent choices for the controlled run.
+    for key in ("NUM_HOMES", "MIN_INITIALIZED_HOMES"):
+        if key in manifest_baseline["configuration"]:
+            CONFIG[key] = manifest_baseline["configuration"][key]
     baseline_summary = manifest_baseline["summary"]
     up_cap = float(baseline_summary["up_regulation_capacity_kw"])
     down_cap = float(baseline_summary["down_regulation_capacity_kw"])
@@ -929,7 +1245,20 @@ def _run_regulation(run_dir, manifest, run_id, sine_freq):
     down_cap *= fraction
     manifest["regulation_capacity_fraction"] = fraction
     baseline_power = baseline_csv.groupby("Time")["Total Electric Power (kW)"].sum()
-    output_times = pd.DatetimeIndex(baseline_cap_csv["Time"])
+
+    baseline_wh_power = baseline_csv.groupby("Time")[
+        "Water Heating Electric Power (kW)"
+    ].sum()
+
+    manifest["tracking_power_basis"] = "Water Heating Electric Power (kW)"
+    manifest["tracking_scope"] = (
+        "HPWH-only diagnostic; whole-home response recorded separately"
+    )
+    
+    output_times = regulation_window(baseline_cap_csv["Time"], CONFIG)
+    manifest["regulation_start"] = str(output_times[0])
+    manifest["regulation_end_exclusive"] = str(
+        output_times[-1] + pd.Timedelta(minutes=CONFIG["t_res"]))
     manifest["baseline_run_id"] = manifest_baseline["run_id"]
     manifest["capacity_basis"] = "B1 reliable instantaneous LU/S capacity quantile; positive means increased consumption"
     manifest["up_regulation_capacity_kw"] = up_cap
@@ -966,22 +1295,33 @@ def _run_regulation(run_dir, manifest, run_id, sine_freq):
     manifest["initialization_failures"] = []
     manifest["homes_requested"] = manifest_baseline["summary"]["homes_simulated"]
     fleet_data = []
-    print(f"Initializing {len(homes)} homes serially...", flush=True)
-    for i, home in enumerate(homes, 1):
-        result = init_fleet_worker(home)
-        if not result["success"]:
-            manifest["initialization_failures"].append({"path": str(Path(home).resolve()), "error": result["error"]})
-            raise RuntimeError("Initialization canceled: homes failed")
-        fleet_data.append(result)
-        manifest["homes"].append({
-            "name": Path(home).name, "path": str(Path(home).resolve()),
-            "xml_sha256": _file_hash(Path(home) / CONFIG["XML_ADDRESS"]),
-            "schedule_sha256": _file_hash(Path(home) / CONFIG["CSV_ADDRESS"]),
-            "prepared_schedule_sha256": _file_hash(Path(home) / "baseline_schedules.csv"),
-            "home_info": result["home_info"],
-        })
-        if i == 1 or i % 20 == 0 or i == len(homes):
-            print(f"Processed {i}/{len(homes)} homes; {len(fleet_data)} initialized", flush=True)
+    # print(f"Initializing {len(homes)} homes serially...", flush=True)
+    with tqdm(
+        total=len(homes),
+        desc="B2 initializing homes",
+        unit="home",
+        file=sys.__stderr__,
+        dynamic_ncols=True,
+        bar_format=(
+            "{desc}: {percentage:3.0f}%|{bar}| "
+            "{n_fmt}/{total_fmt} "
+            "[Elapsed: {elapsed} | ETR: {remaining}]"
+        ),
+    ) as progress:
+        for i, home in enumerate(homes, 1):
+            result = init_fleet_worker(home)
+            if not result["success"]:
+                manifest["initialization_failures"].append({"path": str(Path(home).resolve()), "error": result["error"]})
+                raise RuntimeError("Initialization canceled: homes failed")
+            fleet_data.append(result)
+            manifest["homes"].append({
+                "name": Path(home).name, "path": str(Path(home).resolve()),
+                "xml_sha256": _file_hash(Path(home) / CONFIG["XML_ADDRESS"]),
+                "schedule_sha256": _file_hash(Path(home) / CONFIG["CSV_ADDRESS"]),
+                "prepared_schedule_sha256": _file_hash(Path(home) / "baseline_schedules.csv"),
+                "home_info": result["home_info"],
+            })
+            progress.update(1)
     if not fleet_data:
         raise RuntimeError("No homes initialized successfully; cannot simulate an empty fleet")
     homes = [home["path"] for home in fleet_data]
@@ -990,7 +1330,7 @@ def _run_regulation(run_dir, manifest, run_id, sine_freq):
         if homes[i] != baseline_homes[i]:
             raise RuntimeError(f"Home does not match baseline home")
 
-    print(f"Initialization complete: {len(homes)} successful", flush=True)
+    # print(f"Initialization complete: {len(homes)} successful", flush=True)
     sim_times = pd.DatetimeIndex(fleet_data[0]["controlled"].sim_times)
     if sim_times.empty or sim_times.hasnans or not sim_times.is_unique:
         raise ValueError("Invalid simulation time grid")
@@ -1005,7 +1345,7 @@ def _run_regulation(run_dir, manifest, run_id, sine_freq):
     for home in fleet_data:
         if any(type(eq).__module__.endswith("WetAppliance") for eq in home["controlled"].equipment.values()):
             raise ValueError("WetAppliance requires isolated random generators before threaded baseline updates")
-    reporting_grid = sim_times[sim_times >= output_times[0]]
+    reporting_grid = sim_times[(sim_times >= output_times[0]) & (sim_times <= output_times[-1])]
     if not reporting_grid.equals(output_times):
         raise ValueError("Controlled reporting grid does not match B1")
     signal = load_reg_sig(CONFIG["REG_TYPE"], CONFIG, sine_freq).copy()
@@ -1024,65 +1364,173 @@ def _run_regulation(run_dir, manifest, run_id, sine_freq):
     target_energy_kwh = actual_energy_kwh = 0.
     simulation_started = perf_counter()
     manifest["timings_seconds"] = {"setup": simulation_started - started}
-    progress_interval = max(1, round(60 / CONFIG["t_res"]))
-    with common.numerical_threads(CONFIG), common.fleet_executor(CONFIG) as executor:
+    interval_steps = CONFIG.get("CONTROL_INTERVAL_STEPS", 1)
+
+    if (
+        isinstance(interval_steps, bool)
+        or not isinstance(interval_steps, int)
+        or interval_steps < 1
+    ):
+        raise ValueError("CONTROL_INTERVAL_STEPS must be a positive integer")
+
+    reporting_step = 0
+    with (
+        common.numerical_threads(CONFIG),
+        common.fleet_executor(CONFIG) as executor,
+        tqdm(
+            total=len(sim_times),
+            desc="B2 regulation simulation",
+            unit="step",
+            file=sys.__stderr__,
+            dynamic_ncols=True,
+            bar_format=(
+                "{desc}: {percentage:3.0f}%|{bar}| "
+                "{n_fmt}/{total_fmt} "
+                "[Elapsed: {elapsed} | ETR: {remaining}]"
+            ),
+        ) as progress,
+    ):
         for step, sim_time in enumerate(sim_times, 1):
-            reporting = sim_time >= output_times[0]
-            if reporting:
-                current_signal = float(signal.loc[sim_time])
-                slope = 0. if previous_signal is None else current_signal - previous_signal
+            reporting = output_times[0] <= sim_time <= output_times[-1]
+            if not reporting:
+                # End regulation immediately: cancel delayed requests and held modes.
+                # Continue stepping every dwelling normally through both full days.
                 for home in fleet_data:
-                    home["regulation_signal_slope"] = slope if CONFIG.get("CAUSAL_LOOKAHEAD", True) else 0.
-                previous_signal = current_signal
-                dispatch = dispatch_regulation_signal(
-                    fleet_data, signal.loc[sim_time], previous_actual,
-                    up_cap, down_cap, CONFIG, sim_time)
-            results = common.step_fleet(executor, update_home_worker, fleet_data, sim_time)
-            for home, result in zip(fleet_data, results):
-                if not result["success"]:
-                    raise RuntimeError(f"Update failed at {sim_time} for {home['path']}: {result['error']}")
-                home["last_controlled_kw"] = result["controlled_kw"]
-                home["devices"] = result["devices"]
-                if not reporting:
-                    home["controlled"].results.clear()
+                    home["command_state"] = {}
+                    home["device_modes"] = {}
+                    home["estimated_changes_kw"] = {}
+                    home["continuous_power_kw"] = {}
+                    home["regulation_signal_slope"] = 0.0
             if reporting:
-                controlled_kw = sum(result["controlled_kw"] for result in results)
-                base_kw = float(baseline_power.loc[sim_time])
+                current_signal = _normalise_reg_signal(signal.loc[sim_time])
+
+                # Update the signal slope every simulation step.
+                # Existing lookahead calculations use slope per simulation step.
+                slope = (
+                    0.0
+                    if previous_signal is None
+                    else current_signal - previous_signal
+                )
+
+                for home in fleet_data:
+                    home["regulation_signal_slope"] = (
+                        slope if CONFIG.get("CAUSAL_LOOKAHEAD", True) else 0.0
+                    )
+
+                previous_signal = current_signal
+
+                dispatch_due = reporting_step % interval_steps == 0
+                reporting_step += 1
+
+                # The tracking target updates every simulation step,
+                # even when the controller cannot issue a new command.
+                current_target_kw = current_signal * (
+                    up_cap if current_signal >= 0 else down_cap
+                )
+
+                if dispatch_due:
+                    dispatch = dispatch_regulation_signal(
+                        fleet_data,
+                        current_signal,
+                        previous_actual,
+                        up_cap,
+                        down_cap,
+                        CONFIG,
+                        sim_time,
+                    )
+                else:
+                    # No new discrete requests. The existing command queue
+                    # still retains active modes and pending activations.
+                    for home in fleet_data:
+                        home["device_modes"] = {}
+                        home["estimated_changes_kw"] = {}
+
+                    # Record only diagnostics that are meaningful this step.
+                    dispatch = {
+                        "reg_sig": current_signal,
+                        "target_delta_kw": current_target_kw,
+                        "previous_actual_delta_kw": previous_actual,
+                        "requested_adjustment_kw": 0.0,
+                        "applied_adjustment_kw": 0.0,
+                        "dispatched_units": 0,
+                        "canceled_pending": 0,
+                        "actions": [],
+                    }
+
+            results = common.step_fleet(
+                executor,
+                update_home_worker,
+                fleet_data,
+                sim_time,
+            )
+            
+            if reporting:
+                whole_controlled_kw = sum(
+                    result["controlled_kw"] for result in results
+                )
+                whole_base_kw = float(baseline_power.loc[sim_time])
+
+                controlled_kw = sum(
+                    result["controlled_wh_kw"] for result in results
+                )
+                base_kw = float(baseline_wh_power.loc[sim_time])
+
+                # Feedback now measures the participating water heaters.
                 previous_actual = controlled_kw - base_kw
                 row = {"Time": sim_time, "Up Capacity (kW)": up_cap,
                        "Down Capacity (kW)": down_cap, "Homes": len(fleet_data),
                        "Baseline Power (kW)": base_kw, "Controlled Power (kW)": controlled_kw,
                        "Actual Delta (kW)": previous_actual,
                        "Tracking Error (kW)": dispatch["target_delta_kw"] - previous_actual}
+                row.update({
+                    "Tracking Power Basis": "Water Heating",
+                    "Whole-home Baseline Power (kW)": whole_base_kw,
+                    "Whole-home Controlled Power (kW)": whole_controlled_kw,
+                    "Whole-home Actual Delta (kW)": (
+                        whole_controlled_kw - whole_base_kw
+                    ),
+                })
                 target_energy_kwh += dispatch["target_delta_kw"] * CONFIG["t_res"] / 60
                 actual_energy_kwh += previous_actual * CONFIG["t_res"] / 60
                 row["Cumulative Target Energy (kWh)"] = target_energy_kwh
                 row["Cumulative Actual Delta Energy (kWh)"] = actual_energy_kwh
+                row["Dispatch Update"] = dispatch_due
                 row.update({key: value for key, value in dispatch.items() if key != "actions"})
                 rows.append(row)
-            if step % progress_interval == 0 or step == len(sim_times):
-                print(f"Completed {step}/{len(sim_times)} steps; "
-                      f"elapsed {perf_counter() - simulation_started:.0f}s", flush=True)
+            progress.update(1)
     export_started = perf_counter()
     manifest["timings_seconds"]["simulation"] = export_started - simulation_started
     required_by_home = {}
-    for home in fleet_data:
-        name = Path(home["path"]).name
-        frame, _, _ = home["controlled"].finalize()
-        required = ["Total Electric Power (kW)", "Total Electric Energy (kWh)"]
-        for end_use in home["home_info"]["participating_end_uses"]:
-            required.append(end_use + " Electric Power (kW)")
-        for end_use in ("EV", "Battery"):
-            if end_use in home["home_info"]["participating_end_uses"]:
-                required.append(end_use + " SOC (-)")
-        frame = restore_time_column(frame, name)
-        frame = frame.loc[frame["Time"].isin(output_times)].copy()
-        frame = validate_results(frame, output_times, name, required)
-        # Retain temperatures and other diagnostics in addition to required power.
-        destination = run_dir / "homes" / name
-        destination.mkdir(parents=True, exist_ok=True)
-        frame.to_csv(destination / "home_controlled.csv", index=False)
-        required_by_home[name] = required
+    with tqdm(
+        total=len(fleet_data),
+        desc="B2 finalizing homes",
+        unit="home",
+        file=sys.__stderr__,
+        dynamic_ncols=True,
+        bar_format=(
+            "{desc}: {percentage:3.0f}%|{bar}| "
+            "{n_fmt}/{total_fmt} "
+            "[Elapsed: {elapsed} | ETR: {remaining}]"
+        ),
+    ) as progress:
+        for home in fleet_data:
+            name = Path(home["path"]).name
+            frame, _, _ = home["controlled"].finalize()
+            required = ["Total Electric Power (kW)", "Total Electric Energy (kWh)"]
+            for end_use in home["home_info"]["participating_end_uses"]:
+                required.append(end_use + " Electric Power (kW)")
+            for end_use in ("EV", "Battery"):
+                if end_use in home["home_info"]["participating_end_uses"]:
+                    required.append(end_use + " SOC (-)")
+            frame = restore_time_column(frame, name)
+            frame = frame.loc[frame["Time"].isin(output_times)].copy()
+            frame = validate_results(frame, output_times, name, required)
+            # Retain temperatures and other diagnostics in addition to required power.
+            destination = run_dir / "homes" / name
+            destination.mkdir(parents=True, exist_ok=True)
+            frame.to_csv(destination / "home_controlled.csv", index=False)
+            required_by_home[name] = required
+            progress.update(1)
     controlled_path = aggregate_results(homes, run_dir, output_times, required_by_home)
     capacities = pd.DataFrame(rows)
     capacity_path = run_dir / "regulation_capacity.csv"
@@ -1109,11 +1557,14 @@ def _run_regulation(run_dir, manifest, run_id, sine_freq):
     }
     manifest["summary"] = summary
     manifest["timings_seconds"]["export"] = perf_counter() - export_started
-    print(f"Run timings (seconds): {manifest['timings_seconds']}", flush=True)
+    # print(f"Run timings (seconds): {manifest['timings_seconds']}", flush=True)
     return summary
 
 
 def main(baseline_run_id, sine_freq, reg_type=None):
+    # print("Beginning Controlled simulation...")
+    if CONFIG is None:
+        raise RuntimeError("Call config_loading() before main()")
     if reg_type is not None:
         CONFIG["REG_TYPE"] = reg_type
     minimum_homes = CONFIG["MIN_INITIALIZED_HOMES"]
@@ -1147,8 +1598,8 @@ def main(baseline_run_id, sine_freq, reg_type=None):
         with common.numerical_threads(CONFIG):
             result = _run_regulation(run_dir, manifest, str(baseline_dir), sine_freq)
         manifest["status"] = "complete"
-        print(f"Regulation results saved: {result['controlled_path']}", flush=True)
-        return result
+        # print(f"Regulation results saved: {result['controlled_path']}", flush=True)
+        return result, baseline_dir
     except Exception as exc:
         manifest.update(status="failed", error=repr(exc))
         raise
@@ -1170,4 +1621,4 @@ if __name__ == "__main__":
     if args.capacity_mode is not None:
         CONFIG["REGULATION_CAPACITY_MODE"] = args.capacity_mode
     main(args.baseline_run_id, args.sine_freq, args.reg_type)
-    print("Simulation finished.", flush=True)
+    # print("Simulation finished.", flush=True)
