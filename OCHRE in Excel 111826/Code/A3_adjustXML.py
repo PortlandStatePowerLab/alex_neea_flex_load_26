@@ -24,7 +24,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 FL_DIR = SCRIPT_DIR.parent.parent 
 WORKING_DIR = FL_DIR.parent
 
-INPUT_DIR = FL_DIR / "All Portland Input Files"
+INPUT_DIR = SCRIPT_DIR.parent / "All Portland Input Files"
 OUTPUT_DIR = SCRIPT_DIR.parent / "Combo Regulation All Input Files"
 
 METADATA_DIR = FL_DIR / "Metadata" / "OR_upgrade0.csv"
