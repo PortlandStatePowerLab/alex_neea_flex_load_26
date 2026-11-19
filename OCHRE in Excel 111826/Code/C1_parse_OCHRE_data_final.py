@@ -1,7 +1,7 @@
 """Parse separated B1/B2 exports into per-home time tables.
 
-Run directly for the latest completed pair in Combo/Results, or pass
---run-dir Combo/Results/<run_id>. Outputs go to <run_dir>/Ready_data.
+Run directly for the latest completed pair in the project results folder, or pass
+--run-dir "<results-folder>/<run_id>". Outputs go to <run_dir>/Ready_data.
 No simulation modules are imported or executed.
 """
 
@@ -15,7 +15,7 @@ import pandas as pd
 import sys
 from tqdm import tqdm
 
-RESULTS_DIR = Path(__file__).resolve().parent / "Results"
+RESULTS_DIR = Path(__file__).resolve().parent.parent / "Results Testing 111826"
 RUN_DIR = None  # Set a specific result folder here, or use --run-dir.
 
 # Export suffixes are retained from the original C1/C2 workflow.

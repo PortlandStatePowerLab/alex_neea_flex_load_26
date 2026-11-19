@@ -21,11 +21,11 @@ from tqdm import tqdm
 # DIRECTORY SETUP
 # ---------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-FL_DIR = SCRIPT_DIR.parent 
+FL_DIR = SCRIPT_DIR.parent.parent 
 WORKING_DIR = FL_DIR.parent
 
 INPUT_DIR = FL_DIR / "All Portland Input Files"
-OUTPUT_DIR = FL_DIR / "Combo All Input Files"
+OUTPUT_DIR = SCRIPT_DIR.parent / "Combo Regulation All Input Files"
 
 METADATA_DIR = FL_DIR / "Metadata" / "OR_upgrade0.csv"
 # Load metadata once globally
@@ -1136,7 +1136,7 @@ device_parameters = {
             "rated_resistance_element_power_w": None,
             "tank_volume_gal": None,
             "rated_efficiency": {
-                "type": None,   # "COP" or "UEF"
+                "type": "COP",   # Rated heat-pump coefficient of performance
                 "value": None,
             },
             "heating_capacity_btu_per_hr": None,
@@ -1219,6 +1219,7 @@ def build_device_config(device_type, parameters):
         "HVAC": HVAC_CONVERSION_CONFIG,
         "EV": EV_CONVERSION_CONFIG,
         "Dryer": DRYER_CONVERSION_CONFIG,
+        "Battery": {},
     }
 
     if device_type not in defaults:
@@ -1273,6 +1274,7 @@ def build_device_config(device_type, parameters):
             "cycle_energy_kwh",
             "typical_cycle_duration_min",
         },
+        "Battery": {"rated_power_kw", "usable_energy_capacity_kwh"},
     }
 
     unknown = set(physical) - allowed_physical[device_type]
@@ -1332,9 +1334,9 @@ def build_device_config(device_type, parameters):
             value = efficiency.get("value")
 
             if kind is not None or value is not None:
-                if kind not in {"COP", "UEF"} or value is None:
+                if kind != "COP" or value is None:
                     raise ValueError(
-                        "Supply efficiency type COP/UEF and a value"
+                        "Supply efficiency type COP and a value"
                     )
 
                 if isinstance(value, bool):
@@ -1344,13 +1346,7 @@ def build_device_config(device_type, parameters):
                 if not math.isfinite(value) or value <= 0:
                     raise ValueError("Efficiency must be positive")
 
-                if kind == "UEF":
-                    conv["UniformEnergyFactor"] = value
-                    applied["rated_efficiency"] = {
-                        "type": kind,
-                        "value": value,
-                    }
-                # COP remains a runtime input; do not write it as UEF.
+                # COP is applied through OCHRE runtime equipment settings.
 
     elif device_type == "ERWH":
         conv = config["ERWH_Conversion"]
@@ -1507,6 +1503,10 @@ def main(
         ),
     ) as progress:
         for source_xml in source_xmls:
+            if device_type == "Battery":
+                # B1/B2 supply the battery directly as an OCHRE equipment override.
+                progress.update(1)
+                continue
             xml_file = output_path / source_xml.relative_to(input_path)
 
             try:

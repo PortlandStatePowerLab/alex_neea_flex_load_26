@@ -213,8 +213,8 @@ def make_monitor(cmd_list):
     #     sim_running = False
     #     status.set("Finished — you can close this window")
 
-    status.set("Idle")
-    time_remaining.set("00:00")
+    status.set("Starting simulation...")
+    time_remaining.set("Time remaining: estimating...")
     progress.set(0)
 
     label_status = ttk.Label(root, text="Status:", textvariable=status)
@@ -333,6 +333,11 @@ def main():
     parser.add_argument("--py_exe", default=sys.executable)
     parser.add_argument("--script", required=True)
     parser.add_argument("--workbook")
+    parser.add_argument("--output-folder")
+    parser.add_argument("--show-plots", "--show_plots", action="store_true")
+    parser.add_argument("--params")
+    parser.add_argument("--results-file")
+    parser.add_argument("--script-args", nargs=argparse.REMAINDER, default=[])
     args = parser.parse_args()
 
     command = [args.py_exe, args.script]
@@ -340,6 +345,15 @@ def main():
     if args.workbook:
         command.extend(["--workbook", args.workbook])
 
+    if args.output_folder:
+        command.extend(["--output-folder", args.output_folder])
+    if args.show_plots:
+        command.append("--show-plots")
+    if args.params is not None:
+        command.extend(["--params", args.params])
+    if args.results_file:
+        command.extend(["--results-file", args.results_file])
+    command.extend(args.script_args)
     make_monitor(command)
 
 

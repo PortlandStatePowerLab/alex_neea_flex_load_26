@@ -4,6 +4,7 @@ import math
 
 
 
+
 def determine_control(device_modes, home_settings, CONFIG, sim_time):
     # Initialize control signal dictionary
     ctrl_signal = {}
@@ -87,6 +88,11 @@ def determine_control(device_modes, home_settings, CONFIG, sim_time):
                 'Setpoint': CONFIG[prefix + '_Tcontrol_' + sp_suffix],
                 'Deadband': CONFIG[prefix + '_Tcontrol_' + db_suffix],
             })
+        if device == "HVAC":
+            minimum = CONFIG.get("HVAC_MIN_TEMPERATURE_C", -math.inf)
+            maximum = CONFIG.get("HVAC_MAX_TEMPERATURE_C", math.inf)
+            command = ctrl_signal[end_use]
+            command["Setpoint"] = min(maximum, max(minimum, command["Setpoint"]))
 
     if CONFIG["WH_SIMULATION"] == "ON":
         apply_thermal_mode('WH', 'Water Heating', 'WH')
@@ -97,7 +103,7 @@ def determine_control(device_modes, home_settings, CONFIG, sim_time):
         else:
             apply_thermal_mode('HVAC', 'HVAC Heating', 'HEAT')
 
-    # Dryers retain normal schedule operation and do not participate in modes.
+    # Dryer start delays are added by control_for_home when a cycle is due.
 
     # EV ALU/LU retain the normal charging ceiling; S/CP/GE reduce it.
     if CONFIG["EV_SIMULATION"] == "ON" and home_settings.get("home_charger_kw") is not None:
@@ -219,4 +225,11 @@ def control_for_home(home, settings, sim_time, baseline=False, requested_modes=N
         if device not in devices:
             config[flag] = "OFF"
     controls = determine_control(modes, info, config, sim_time)
+    if modes.get("Dryer") == "S":
+        dryer = home["controlled"].get_equipment_by_end_use("Clothes Dryer")
+        if hasattr(dryer, "can_defer") and dryer.can_defer(sim_time):
+            controls["Clothes Dryer"]["Delay"] = True
+        else:
+            home["command_state"]["Dryer"]["active_mode"] = "NORMAL"
+            modes["Dryer"] = "NORMAL"
     return {end_use: values for end_use, values in controls.items() if end_use in end_uses}

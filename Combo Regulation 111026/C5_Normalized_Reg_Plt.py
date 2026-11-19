@@ -2,18 +2,6 @@
 Author: Alex Wardwell
 Created: 8/12/26
 
-Plot requested and actual Combo regulation response on one normalized axis.
-Run B1_Baseline and B2_Regulation first. C3 reads B2's regulation tracking
-log and divides the actual controlled-minus-baseline fleet power by the
-recorded static regulation capacity. Thus, for example, 15 kW of response
-against 20 kW of capacity is plotted as 0.75.
-Adapted from HPWH Regulation Testing 831/HPWH_C3.py.
-Run directly for the latest completed B1/B2 pair, or pass --run-dir / --run-id.
-Use --no-show to save PDF plots without opening a window. Outputs go to Ready_data
-inside the selected run. C1 and C2 do not need to be run first.
-Plots show the best and worst complete rolling one-hour windows, ranked by
-normalized tracking RMSE (no time shifting). Windows with missing samples are excluded.
-
 @modified by: 
 @modified date: 
 """

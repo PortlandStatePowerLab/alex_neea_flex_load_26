@@ -160,7 +160,6 @@ CONFIG = None
 def config_loading(
     Season,
     Weekday,
-    REG_TYPE,
     Output_Folder,
     device_type,
     device_parameters,
@@ -169,7 +168,7 @@ def config_loading(
     global CONFIG
 
     config = common.load_configuration(
-        Season, Weekday, REG_TYPE, Output_Folder
+        Season, Weekday, Output_Folder
     )
 
     CONFIG = common.apply_device_parameters(
@@ -403,6 +402,9 @@ def _estimate_hvac_capacity_kw(home, equipment, settings, heating):
     offset = _capacity_number(getattr(equipment, "deadband_offset", None))
     if None in (load_sp, load_db, shed_sp, shed_db, offset):
         return 0.0, 0.0
+    low = settings.get("HVAC_MIN_TEMPERATURE_C", -np.inf)
+    high = settings.get("HVAC_MAX_TEMPERATURE_C", np.inf)
+    load_sp, shed_sp = np.clip([load_sp, shed_sp], low, high)
     direction = 1 if heating else -1
     turn_on = load_sp - direction * load_db * (1 - offset)
     turn_off = shed_sp + direction * shed_db * offset
@@ -415,7 +417,8 @@ def _estimate_hvac_capacity_kw(home, equipment, settings, heating):
             and direction * (temperature - turn_on) < 0):
         up = max(0.0, (capacity * eir + fan) / 1000 - power)
     down = power if direction * (temperature - turn_off) > 0 else 0.0
-    return up, down
+    can_load, can_shed = common.hvac_regulation_limits(temperature, heating, settings)
+    return up if can_load else 0.0, down if can_shed else 0.0
 
 
 def estimate_heat_regulation_capacity_kw(home, heater, settings=None):
@@ -427,7 +430,9 @@ def estimate_ac_regulation_capacity_kw(home, ac, settings=None):
 
 
 def estimate_dryer_regulation_capacity_kw(home, dryer, settings=None):
-    """No implemented dryer mode changes power in B_ControlSignals yet."""
+    """One-sided capacity at the scheduled cycle start, before the cycle runs."""
+    if hasattr(dryer, "can_defer") and dryer.can_defer(home.get("sim_time"), baseline_sample=True):
+        return 0.0, max(0.0, dryer.electric_kw)
     return 0.0, 0.0
 
 
@@ -444,7 +449,8 @@ def estimate_ev_regulation_capacity_kw(home, ev, settings=None):
             or fraction is None or not 0 <= fraction <= 1
             or not getattr(ev, "in_event", False)):
         return 0.0, 0.0
-    shed_limit = max(fraction * charger, 0.001)
+    floor = common.ev_charging_floor_kw(ev, home.get("sim_time"), baseline_sample=True)
+    shed_limit = max(fraction * charger, 0.001, floor)
     return 0.0, max(0.0, power - shed_limit)
 
 
@@ -713,7 +719,7 @@ def main():
     if not np.isfinite(quantile) or not 0 <= quantile <= 1:
         raise ValueError("RELIABLE_CAPACITY_QUANTILE must be between 0 and 1")
     run_id = dt.datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
-    run_dir = Path(CONFIG.get("RESULTS_DIR", Path(__file__).resolve().parent / "Results")) / run_id
+    run_dir = Path(CONFIG.get("RESULTS_DIR", Path(__file__).resolve().parent.parent / "Results Testing 111826")) / run_id
     run_dir.mkdir(parents=True)
     manifest = {"run_id": run_id, "status": "running", "configuration": CONFIG,
                 "capacity_basis": "Instantaneous LU/S estimates; excludes response delay and sustained-service guarantees"}

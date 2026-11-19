@@ -6,10 +6,11 @@ import subprocess
 import argparse
 import tkinter
 
-PROJECT_FOLDER = pathlib.Path(__file__).resolve().parent.parent
+CODE_FOLDER = pathlib.Path(__file__).resolve().parent.parent
+PROJECT_FOLDER = CODE_FOLDER.parent
 VENV_FOLDER = PROJECT_FOLDER / ".venv"
 REQS_FILE = PROJECT_FOLDER / "requirements.txt"
-MAIN_SCRIPT = PROJECT_FOLDER / "F1_Main.py"
+MAIN_SCRIPT = CODE_FOLDER / "F1_Main.py"
 
 
 REQUIRED_PYTHON = (3, 12, 10)
@@ -85,23 +86,54 @@ def reqs(py_venv_path):
     return py_venv_path
 
 
-def run_script(py_venv_path, results_folder):
-    if not MAIN_SCRIPT.is_file():
-        raise RuntimeError(f"Simulation script not found: {MAIN_SCRIPT}")
+def prepare_environment():
+    """Prepare dependencies before starting the monitored simulation."""
+    print("STAGE|Checking Python version...", flush=True)
+    check_python_version()
+    print("STAGE|Preparing virtual environment...", flush=True)
+    python_venv = make_venv()
+    print("STAGE|Installing requirements...", flush=True)
+    reqs(python_venv)
+    print("STAGE|Environment ready; preparing simulation...", flush=True)
+    return python_venv
 
-    subprocess.run(
-        [
-            str(py_venv_path),
-            "-u",
-            str(MAIN_SCRIPT),
-            "--output-folder",
-            str(results_folder),
-        ],
-        check=True,
-        cwd=PROJECT_FOLDER,
-    )
 
-    print("Simulation script completed successfully.", flush=True)
+def resolve_results_folder(output_folder=None):
+    if output_folder is None:
+        return pick_results_folder()
+    folder = pathlib.Path(output_folder).expanduser()
+    if not folder.is_absolute():
+        folder = PROJECT_FOLDER / folder
+    folder = folder.resolve()
+    if not folder.is_dir():
+        raise ValueError(f"Output folder does not exist: {folder}")
+    return folder
+
+
+def run_script(py_venv_path, results_folder, show_plots=False, params=None, results_file=None, monitored=True):
+    """Launch the monitor, which owns the F1 subprocess."""
+    monitor_script = CODE_FOLDER / "Setup" / "monitor.py"
+    for script in (MAIN_SCRIPT, monitor_script):
+        if not script.is_file():
+            raise RuntimeError(f"Script not found: {script}")
+    command = [
+        str(py_venv_path), "-u", str(monitor_script),
+        "--py_exe", str(py_venv_path), "--script", str(MAIN_SCRIPT),
+        "--output-folder", str(results_folder),
+    ]
+    if not monitored:
+        command = [
+            str(py_venv_path), "-u", str(MAIN_SCRIPT),
+            "--output-folder", str(results_folder),
+        ]
+    if params is not None:
+        command.extend(["--params", params])
+    if results_file is not None:
+        command.extend(["--results-file", str(results_file)])
+    if show_plots:
+        command.append("--show-plots")
+    print("STAGE|Starting simulation...", flush=True)
+    subprocess.run(command, check=True, cwd=PROJECT_FOLDER)
 
 
 def pick_results_folder():
@@ -121,51 +153,15 @@ def pick_results_folder():
     return folder_path
 
 def main():
+    parser = argparse.ArgumentParser(description="Prepare OCHRE and launch the monitored simulation")
+    parser.add_argument("--output-folder")
+    parser.add_argument("--show-plots", "--show_plots", action="store_true")
+    parser.add_argument("--params", required=True, help="JSON simulation parameters")
+    args = parser.parse_args()
+    results_folder = resolve_results_folder(args.output_folder)
+    python_venv = prepare_environment()
+    run_script(python_venv, results_folder, show_plots=args.show_plots, params=args.params)
 
-    # results_folder = pick_results_folder()
-
-    # parser = argparse.ArgumentParser(description="Path to Excel Workbook")
-    # parser.add_argument("--workbook", default=".", help="Path to the Excel Workbook")
-    # args = parser.parse_args()
-    # print(args.workbook)
-
-    # EXCEL_WB = pathlib.Path(args.workbook).resolve()
-
-    # if not EXCEL_WB.is_file() or not (EXCEL_WB.suffix == ".xlsx" or EXCEL_WB.suffix == ".xlsm"):
-    #     raise RuntimeError(f"Excel workbook not found or is in an invalid format: {EXCEL_WB}")
-
-    try:
-        results_folder = pick_results_folder()
-        print("Starting simulation...")
-        curr_stage = "Checking Python version..."
-        print(f"STAGE|{curr_stage}", flush=True)
-        check_python_version()
-        curr_stage = "Preparing virtual environment..."
-        print(f"STAGE|{curr_stage}", flush=True)
-        py_venv_path = make_venv()
-        curr_stage = "Installing requirements..."
-        print(f"STAGE|{curr_stage}", flush=True)
-        reqs(py_venv_path)
-        curr_stage = "Running main script..."
-        print(f"STAGE|{curr_stage}", flush=True)
-        run_script(py_venv_path, results_folder)
-        print("Simulation completed successfully.")
-    except RuntimeError as e:
-        print(f"Runtime error occurred: {e}")
-        print(f"Stage reached: {curr_stage}")
-        sys.exit(1)
-    except subprocess.CalledProcessError as f:
-        print(f"Subprocess error occurred: {f}")
-        print(f"Stage reached: {curr_stage}")
-        sys.exit(1)
-    except subprocess.TimeoutExpired as g:
-        print(f"Subprocess timeout occurred: {g}")
-        print(f"Stage reached: {curr_stage}")
-        sys.exit(1)
-    except OSError as h:
-        print(f"OS error occurred: {h}")
-        print(f"Stage reached: {curr_stage}")
-        sys.exit(1)
 
 if __name__ == "__main__":
     main()

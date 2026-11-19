@@ -158,7 +158,6 @@ CONFIG = None
 def config_loading(
     Season,
     Weekday,
-    REG_TYPE,
     Output_Folder,
     device_type,
     device_parameters,
@@ -169,7 +168,7 @@ def config_loading(
     global CONFIG
 
     config = common.load_configuration(
-        Season, Weekday, REG_TYPE, Output_Folder
+        Season, Weekday, Output_Folder
     )
 
     CONFIG = common.apply_device_parameters(
@@ -228,7 +227,11 @@ def _action_delta_kw(home, device, mode, sim_time, settings, equipment):
         if power is None:
             return 0.0
         command = controls.get(eq.end_use, {})
-        if device in ("WH", "HVAC"):
+        if device == "Dryer":
+            if mode != "S" or not hasattr(eq, "can_defer") or not eq.can_defer(sim_time):
+                return 0.0
+            delta = -float(eq.all_events.loc[eq.event_index, "power"])
+        elif device in ("WH", "HVAC"):
             # Reuse the existing conservative thermostat estimates with both
             # thresholds set to the requested mode, including NORMAL release.
             prefix = "WH" if device == "WH" else ("HEAT" if eq.end_use == "HVAC Heating" else "AC")
@@ -274,10 +277,12 @@ def _action_delta_kw(home, device, mode, sim_time, settings, equipment):
             if (None in (soc, capacity, soc_max, ceiling) or hours <= 0
                     or not 0 <= soc <= 1 or not 0 <= soc_max <= 1 or capacity <= 0):
                 return 0.0
-            energy_limit = max(0.0, soc_max - soc) * capacity / hours / EV_EFFICIENCY
-            delta = min(ceiling, energy_limit) - power
+            efficiency = getattr(eq, "charging_efficiency", EV_EFFICIENCY)
+            energy_limit = max(0.0, soc_max - soc) * capacity / hours / efficiency
+            ceiling = max(ceiling, common.ev_charging_floor_kw(eq, sim_time))
+            delta = min(ceiling, energy_limit, eq.max_power) - power
         else:
-            return 0.0  # Dryer modes do not change power yet.
+            return 0.0
         total += delta
     return float(total)
 
@@ -383,8 +388,6 @@ def device_eligibility(home, device, mode, sim_time, settings=None):
         return False
     if mode == "NORMAL":
         return True
-    if device == "Dryer":
-        return False
     delta = _action_delta_kw(home, device, mode, sim_time, settings, equipment)
     return delta > 1e-9 if mode == "LU" else delta < -1e-9
 
@@ -411,10 +414,14 @@ def action_estimation(home, device, mode, sim_time, settings=None):
     # Context is already validated above. Avoid repeating the equipment scan
     # and (for thermal devices) calculating the same response twice per action.
     hold_until = state.get("hold_until")
-    if (not equipment or device == "Dryer"
+    if (not equipment
             or (hold_until is not None and sim_time < hold_until)):
         return 0.0
-    delta = _action_delta_kw(home, device, mode, sim_time, settings, equipment)
+    action_time = sim_time
+    if device == "Dryer":
+        delay_steps = _response_steps(home, device, sim_time, settings)
+        action_time += dt.timedelta(minutes=delay_steps * settings["t_res"])
+    delta = _action_delta_kw(home, device, mode, action_time, settings, equipment)
     if mode == "NORMAL":
         return delta
     return delta if (delta > 1e-9 if mode == "LU" else delta < -1e-9) else 0.0
@@ -431,7 +438,7 @@ def _dispatch_devices(home):
     """Device groups actually participating in this home."""
     uses = set(home["home_info"]["participating_end_uses"])
     return [device for device, end_uses in DEVICE_END_USES.items()
-            if device != "Dryer" and uses.intersection(end_uses)]
+            if uses.intersection(end_uses)]
 
 
 def _dispatch_candidates(fleet_data, sim_time, settings):
@@ -518,9 +525,11 @@ def _continuous_limits(home, device, sim_time, settings):
         if not getattr(eq, "in_event", False) or sim_time >= eq.event_end:
             return None
         hours = float(settings["t_res"]) / 60
-        energy = max(0., eq.soc_max_ctrl - eq.soc) * eq.capacity / hours / EV_EFFICIENCY
+        efficiency = getattr(eq, "charging_efficiency", EV_EFFICIENCY)
+        energy = max(0., eq.soc_max_ctrl - eq.soc) * eq.capacity / hours / efficiency
         high = min(home["home_info"]["home_charger_kw"], getattr(eq, "max_power", float("inf")), energy)
-        low = min(high, max(.001, settings["EV_SHED_PCT"] * home["home_info"]["home_charger_kw"]))
+        low = min(high, max(.001, settings["EV_SHED_PCT"] * home["home_info"]["home_charger_kw"],
+                            common.ev_charging_floor_kw(eq, sim_time)))
     if not np.isfinite([power, low, high]).all() or low > high:
         raise ValueError("Invalid continuous limits")
     return power, float(low), float(high)
@@ -535,7 +544,7 @@ def _energy_weight(home, device, direction, sim_time, settings):
     low = float(getattr(eq, "soc_min", 0.))
     high = float(getattr(eq, "soc_max_ctrl", getattr(eq, "soc_max", 1.)))
     margin = high - soc if direction > 0 else soc - low
-    capacity = float(getattr(eq, "capacity", 1.))
+    capacity = float(eq.capacity_kwh if device == "Battery" else eq.capacity)
     return max(1e-6, margin * capacity)
 
 
@@ -559,7 +568,9 @@ def _share_continuous(entries, total, sim_time, settings):
             _, equipment = _action_context(home, device, "NORMAL", sim_time, settings)
             eq = equipment[0]
             midpoint = (float(getattr(eq, "soc_min", 0.)) + float(getattr(eq, "soc_max", 1.))) / 2
-            desired[i] = (midpoint - float(eq.soc)) * float(getattr(eq, "capacity", 1.)) / hours
+            recovery_kw = (midpoint - float(eq.soc)) * eq.capacity_kwh / hours
+            recovery_limit = settings.get("BATTERY_RECOVERY_RATE_KW", eq.capacity)
+            desired[i] = np.clip(recovery_kw, -recovery_limit, recovery_limit)
     commands = np.clip(desired, low, high)
     target = float(np.clip(power.sum() + total, low.sum(), high.sum()))
     for _ in range(len(entries) + 1):
@@ -781,17 +792,17 @@ def regulation_window(times, config):
     return selected
 
 
-def load_reg_sig(reg_type, CONFIG, sine_freq):
-    reg_sig = common.configure_regulation(reg_type, CONFIG["REG_DIR"], CONFIG["Start"], CONFIG["Duration"], CONFIG["t_res"], sine_freq)
+def load_reg_sig(CONFIG, sine_freq):
+    reg_sig = common.configure_regulation(CONFIG["Start"], CONFIG["Duration"], CONFIG["t_res"], sine_freq)
 
     if reg_sig is None:
-        raise ValueError(f"Failed to load regulation signal for type: {reg_type}")
+        raise ValueError("Failed to generate the regulation signal")
 
     return reg_sig
 
 def load_baseline_run(run_id):
     """Load a completed B1 run and validate the fleet/time/capacity contract."""
-    root = Path(CONFIG.get("RESULTS_DIR", Path(__file__).resolve().parent / "Results"))
+    root = Path(CONFIG.get("RESULTS_DIR", Path(__file__).resolve().parent.parent / "Results Testing 111826"))
     run_path = Path(run_id)
     if not run_path.is_absolute():
         run_path = root / run_path
@@ -804,14 +815,21 @@ def load_baseline_run(run_id):
     if (not names or len(names) != len(set(names)) or len(homes) != len(set(homes))
             or len(names) != manifest["summary"]["homes_simulated"]):
         raise ValueError("Invalid baseline manifest fleet")
+    power_columns_by_home = {
+        entry["name"]: [
+            f"{end_use} Electric Power (kW)"
+            for end_use in entry["home_info"]["participating_end_uses"]
+        ]
+        for entry in entries
+    }
+    tracking_columns = set().union(*power_columns_by_home.values())
+    if not tracking_columns:
+        raise ValueError("B1 baseline has no participating end uses")
+    total_power_column = "Total Electric Power (kW)"
     baseline = pd.read_csv(
         run_path / "baseline.csv",
-        usecols=[
-            "Time",
-            "Home",
-            "Total Electric Power (kW)",
-            "Water Heating Electric Power (kW)",
-        ],
+        usecols=["Time", "Home", total_power_column, *sorted(tracking_columns)],
+        dtype={"Home": str},
     )
     capacity = pd.read_csv(run_path / "capacity.csv")
     times = pd.date_range(manifest["time_start"], periods=manifest["time_steps"],
@@ -822,14 +840,10 @@ def load_baseline_run(run_id):
     if set(baseline["Home"]) != set(names):
         raise ValueError("Baseline CSV homes do not match the manifest")
     for name, frame in baseline.groupby("Home", sort=False):
-        validate_results(
-            frame,
-            times,
-            name,
-            [
-                "Total Electric Power (kW)",
-                "Water Heating Electric Power (kW)",
-            ],
+        power_columns = power_columns_by_home[name]
+        frame = validate_results(frame, times, name, [total_power_column, *power_columns])
+        baseline.loc[frame.index, "Participating Electric Power (kW)"] = (
+            frame[power_columns].sum(axis=1)
         )
     capacity = validate_results(capacity, times, "B1 capacity",
                                 ["Up Capacity (kW)", "Down Capacity (kW)", "Homes"])
@@ -1055,16 +1069,18 @@ def update_home_worker(home_data, sim_time):
             if hasattr(equipment, "in_event"):
                 state["in_event"] = bool(equipment.in_event)
             devices[name] = state
-        wh_power = _capacity_number(
-            metrics.get("Water Heating Electric Power (kW)")
-        )
-        if wh_power is None:
-            raise ValueError("Missing/nonfinite water-heater power")
+        participating_kw = 0.0
+        for end_use in home_data["home_info"]["participating_end_uses"]:
+            column = f"{end_use} Electric Power (kW)"
+            end_use_kw = _capacity_number(metrics.get(column))
+            if end_use_kw is None:
+                raise ValueError(f"Missing/nonfinite {column}")
+            participating_kw += end_use_kw
 
         return {
             "success": True,
             "controlled_kw": power,
-            "controlled_wh_kw": wh_power,
+            "controlled_participating_kw": participating_kw,
             "devices": devices,
         }
     except Exception as exc:
@@ -1108,6 +1124,9 @@ def _estimate_hvac_capacity_kw(home, equipment, settings, heating):
     offset = _capacity_number(getattr(equipment, "deadband_offset", None))
     if None in (load_sp, load_db, shed_sp, shed_db, offset):
         return 0.0, 0.0
+    low = settings.get("HVAC_MIN_TEMPERATURE_C", -np.inf)
+    high = settings.get("HVAC_MAX_TEMPERATURE_C", np.inf)
+    load_sp, shed_sp = np.clip([load_sp, shed_sp], low, high)
     direction = 1 if heating else -1
     turn_on = load_sp - direction * load_db * (1 - offset)
     turn_off = shed_sp + direction * shed_db * offset
@@ -1120,7 +1139,8 @@ def _estimate_hvac_capacity_kw(home, equipment, settings, heating):
             and direction * (temperature - turn_on) < 0):
         up = max(0.0, (capacity * eir + fan) / 1000 - power)
     down = power if direction * (temperature - turn_off) > 0 else 0.0
-    return up, down
+    can_load, can_shed = common.hvac_regulation_limits(temperature, heating, settings)
+    return up if can_load else 0.0, down if can_shed else 0.0
 
 
 def estimate_heat_regulation_capacity_kw(home, heater, settings=None):
@@ -1132,7 +1152,8 @@ def estimate_ac_regulation_capacity_kw(home, ac, settings=None):
 
 
 def estimate_dryer_regulation_capacity_kw(home, dryer, settings=None):
-    """No implemented dryer mode changes power in B_ControlSignals yet."""
+    if hasattr(dryer, "can_defer") and dryer.can_defer(home.get("sim_time")):
+        return 0.0, float(dryer.all_events.loc[dryer.event_index, "power"])
     return 0.0, 0.0
 
 
@@ -1149,7 +1170,8 @@ def estimate_ev_regulation_capacity_kw(home, ev, settings=None):
             or fraction is None or not 0 <= fraction <= 1
             or not getattr(ev, "in_event", False)):
         return 0.0, 0.0
-    shed_limit = max(fraction * charger, 0.001)
+    shed_limit = max(fraction * charger, 0.001,
+                     common.ev_charging_floor_kw(ev, home.get("sim_time")))
     return 0.0, max(0.0, power - shed_limit)
 
 
@@ -1219,6 +1241,17 @@ def _file_hash(path):
     return digest.hexdigest()
 
 
+def resolve_capacity_mode(mode, up_cap, down_cap):
+    """Use symmetric regulation automatically only when both sides are available."""
+    if mode == "auto":
+        mode = "symmetric" if min(up_cap, down_cap) > 0 else "asymmetric"
+    if mode not in ("asymmetric", "symmetric"):
+        raise ValueError("REGULATION_CAPACITY_MODE must be auto, asymmetric, or symmetric")
+    if mode == "symmetric":
+        up_cap = down_cap = min(up_cap, down_cap)
+    return mode, up_cap, down_cap
+
+
 def _run_regulation(run_dir, manifest, run_id, sine_freq):
     started = perf_counter()
     baseline_csv, baseline_cap_csv, manifest_baseline, baseline_homes = load_baseline_run(run_id)
@@ -1235,24 +1268,30 @@ def _run_regulation(run_dir, manifest, run_id, sine_freq):
     fraction = float(CONFIG.get("REGULATION_CAPACITY_FRACTION", 1.0))
     if not np.isfinite(fraction) or not 0 < fraction <= 1:
         raise ValueError("REGULATION_CAPACITY_FRACTION must be in (0, 1]")
-    mode = CONFIG.get("REGULATION_CAPACITY_MODE", "asymmetric")
-    if mode not in ("asymmetric", "symmetric"):
-        raise ValueError("REGULATION_CAPACITY_MODE must be asymmetric or symmetric")
-    if mode == "symmetric":
-        up_cap = down_cap = min(up_cap, down_cap)
+    requested_mode = CONFIG.get("REGULATION_CAPACITY_MODE", "asymmetric")
+    mode, up_cap, down_cap = resolve_capacity_mode(requested_mode, up_cap, down_cap)
+    manifest["requested_regulation_capacity_mode"] = requested_mode
     manifest["regulation_capacity_mode"] = mode
     up_cap *= fraction
     down_cap *= fraction
     manifest["regulation_capacity_fraction"] = fraction
     baseline_power = baseline_csv.groupby("Time")["Total Electric Power (kW)"].sum()
 
-    baseline_wh_power = baseline_csv.groupby("Time")[
-        "Water Heating Electric Power (kW)"
+    baseline_participating_power = baseline_csv.groupby("Time")[
+        "Participating Electric Power (kW)"
     ].sum()
 
-    manifest["tracking_power_basis"] = "Water Heating Electric Power (kW)"
+    tracking_end_uses = sorted({
+        end_use
+        for entry in manifest_baseline["homes"]
+        for end_use in entry["home_info"]["participating_end_uses"]
+    })
+    tracking_basis = " + ".join(tracking_end_uses)
+    manifest["tracking_power_basis"] = " + ".join(
+        f"{end_use} Electric Power (kW)" for end_use in tracking_end_uses
+    )
     manifest["tracking_scope"] = (
-        "HPWH-only diagnostic; whole-home response recorded separately"
+        "Participating end uses; whole-home response recorded separately"
     )
     
     output_times = regulation_window(baseline_cap_csv["Time"], CONFIG)
@@ -1313,6 +1352,9 @@ def _run_regulation(run_dir, manifest, run_id, sine_freq):
             if not result["success"]:
                 manifest["initialization_failures"].append({"path": str(Path(home).resolve()), "error": result["error"]})
                 raise RuntimeError("Initialization canceled: homes failed")
+            baseline_uses = manifest_baseline["homes"][i - 1]["home_info"]["participating_end_uses"]
+            if set(result["home_info"]["participating_end_uses"]) != set(baseline_uses):
+                raise ValueError(f"{Path(home).name}: participating end uses differ from B1")
             fleet_data.append(result)
             manifest["homes"].append({
                 "name": Path(home).name, "path": str(Path(home).resolve()),
@@ -1348,7 +1390,7 @@ def _run_regulation(run_dir, manifest, run_id, sine_freq):
     reporting_grid = sim_times[(sim_times >= output_times[0]) & (sim_times <= output_times[-1])]
     if not reporting_grid.equals(output_times):
         raise ValueError("Controlled reporting grid does not match B1")
-    signal = load_reg_sig(CONFIG["REG_TYPE"], CONFIG, sine_freq).copy()
+    signal = load_reg_sig(CONFIG, sine_freq).copy()
     signal.index = pd.to_datetime(signal.index, errors="raise")
     if not signal.index.is_unique:
         raise ValueError("Duplicate regulation signal timestamps")
@@ -1471,11 +1513,11 @@ def _run_regulation(run_dir, manifest, run_id, sine_freq):
                 whole_base_kw = float(baseline_power.loc[sim_time])
 
                 controlled_kw = sum(
-                    result["controlled_wh_kw"] for result in results
+                    result["controlled_participating_kw"] for result in results
                 )
-                base_kw = float(baseline_wh_power.loc[sim_time])
+                base_kw = float(baseline_participating_power.loc[sim_time])
 
-                # Feedback now measures the participating water heaters.
+                # Measure the same participating end uses in B1 and B2.
                 previous_actual = controlled_kw - base_kw
                 row = {"Time": sim_time, "Up Capacity (kW)": up_cap,
                        "Down Capacity (kW)": down_cap, "Homes": len(fleet_data),
@@ -1483,7 +1525,7 @@ def _run_regulation(run_dir, manifest, run_id, sine_freq):
                        "Actual Delta (kW)": previous_actual,
                        "Tracking Error (kW)": dispatch["target_delta_kw"] - previous_actual}
                 row.update({
-                    "Tracking Power Basis": "Water Heating",
+                    "Tracking Power Basis": tracking_basis,
                     "Whole-home Baseline Power (kW)": whole_base_kw,
                     "Whole-home Controlled Power (kW)": whole_controlled_kw,
                     "Whole-home Actual Delta (kW)": (
@@ -1554,6 +1596,7 @@ def _run_regulation(run_dir, manifest, run_id, sine_freq):
         "capacity_availability_quantile": quantile,
         "up_regulation_capacity_kw": up_cap,
         "down_regulation_capacity_kw": down_cap,
+        "regulation_capacity_mode": mode,
     }
     manifest["summary"] = summary
     manifest["timings_seconds"]["export"] = perf_counter() - export_started
@@ -1561,12 +1604,10 @@ def _run_regulation(run_dir, manifest, run_id, sine_freq):
     return summary
 
 
-def main(baseline_run_id, sine_freq, reg_type=None):
+def main(baseline_run_id, sine_freq):
     # print("Beginning Controlled simulation...")
     if CONFIG is None:
         raise RuntimeError("Call config_loading() before main()")
-    if reg_type is not None:
-        CONFIG["REG_TYPE"] = reg_type
     minimum_homes = CONFIG["MIN_INITIALIZED_HOMES"]
     if isinstance(minimum_homes, bool) or not isinstance(minimum_homes, int) or minimum_homes < 0:
         raise ValueError("MIN_INITIALIZED_HOMES must be a nonnegative integer")
@@ -1574,7 +1615,7 @@ def main(baseline_run_id, sine_freq, reg_type=None):
     if not np.isfinite(quantile) or not 0 <= quantile <= 1:
         raise ValueError("RELIABLE_CAPACITY_QUANTILE must be between 0 and 1")
     # Save each controlled attempt in a new subfolder of its B1 baseline.
-    root = Path(CONFIG.get("RESULTS_DIR", Path(__file__).resolve().parent / "Results"))
+    root = Path(CONFIG.get("RESULTS_DIR", Path(__file__).resolve().parent.parent / "Results Testing 111826"))
     run_dir = Path(baseline_run_id)
     if not run_dir.is_absolute():
         run_dir = root / run_dir
@@ -1614,11 +1655,10 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Run regulation using a completed Combo B1 baseline")
     parser.add_argument("--baseline-run-id", required=True, help="B1 result directory name or absolute path")
-    parser.add_argument("--reg-type", choices=("RegA", "RegD"), default=None)
     parser.add_argument("--sine-freq", type=float, default=0.1, help="Sine frequency in cycles per minute (below 0.5 / t_res)")
     parser.add_argument("--capacity-mode", choices=("asymmetric", "symmetric"), default=None)
     args = parser.parse_args()
     if args.capacity_mode is not None:
         CONFIG["REGULATION_CAPACITY_MODE"] = args.capacity_mode
-    main(args.baseline_run_id, args.sine_freq, args.reg_type)
+    main(args.baseline_run_id, args.sine_freq)
     # print("Simulation finished.", flush=True)

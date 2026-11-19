@@ -26,12 +26,158 @@ from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 import warnings
 from types import MethodType
-from ochre.Equipment.EV import ElectricVehicle
+from ochre.Equipment.EV import EV_EFFICIENCY, ElectricVehicle
+from ochre.Equipment.EventBasedLoad import EventBasedLoad
+from ochre.Equipment.HVAC import ASHPHeater, ASHPCooler
+from ochre.Models.Envelope import rho_air, cp_air
+from ochre.utils import load_hpxml
+
+
+class CalculatorEV(ElectricVehicle):
+    def __init__(self, charging_efficiency=EV_EFFICIENCY, usable_flexibility=1.0, **kwargs):
+        self.charging_efficiency = charging_efficiency
+        self.usable_flexibility = usable_flexibility
+        super().__init__(**kwargs)
+
+    def charging_floor_kw(self, sim_time, soc=None):
+        if not self.in_event:
+            return 0.0
+        event = self.all_events.loc[self.event_index]
+        elapsed = min(sim_time + self.time_res, self.event_end) - self.event_start
+        hours = self.time_res.total_seconds() / 3600
+        baseline_soc = min(1, event["start_soc"] + self.max_power * self.charging_efficiency
+                           * elapsed.total_seconds() / 3600 / self.capacity)
+        minimum_soc = baseline_soc - self.usable_flexibility
+        available_soc = self.soc if soc is None else soc
+        return max(0, minimum_soc - available_soc) * self.capacity / hours / self.charging_efficiency
+
+    def initialize_schedule(self, **kwargs):
+        schedule = super().initialize_schedule(**kwargs)
+        hours = self.all_events["duration"].dt.total_seconds() / 3600
+        self.all_events["end_soc"] = (
+            self.all_events["start_soc"]
+            + self.max_power * self.charging_efficiency * hours / self.capacity
+        ).clip(upper=1)
+        return schedule
+
+    def end_event(self):
+        super().end_event()
+        event = self.all_events.loc[self.event_index]
+        hours = event["duration"].total_seconds() / 3600
+        self.all_events.loc[self.event_index, "end_soc"] = min(
+            1, event["start_soc"] + self.max_power * self.charging_efficiency * hours / self.capacity
+        )
+
+    def calculate_power_and_heat(self):
+        if self.mode == "Off":
+            return super().calculate_power_and_heat()
+        hours = self.time_res.total_seconds() / 3600
+        room_kw = max(0, self.soc_max_ctrl - self.soc) * self.capacity / hours
+        requested_kw = max(self.p_setpoint, self.charging_floor_kw(self.current_time))
+        self.electric_kw = min(requested_kw, self.max_power, room_kw / self.charging_efficiency)
+        battery_kw = self.electric_kw * self.charging_efficiency
+        self.next_soc = self.soc + battery_kw * hours / self.capacity
+        self.sensible_gain = self.electric_kw - battery_kw
+
+    def make_equivalent_battery_model(self):
+        result = super().make_equivalent_battery_model()
+        result[f"{self.end_use} EBM Efficiency (-)"] = self.charging_efficiency
+        return result
+
+
+class CalculatorHVAC:
+    """Apply calculator ratings after OCHRE resolves the HPXML equipment."""
+
+    def __init__(self, calculator_rated_power=None, calculator_minimum_modulation=None, **kwargs):
+        capacities = np.atleast_1d(kwargs["Capacity (W)"])
+        if calculator_rated_power is not None:
+            compressor_w = calculator_rated_power - kwargs["Rated Auxiliary Power (W)"]
+            if compressor_w <= 0:
+                raise ValueError("Rated HVAC electrical power must exceed rated fan power")
+            original_eir = np.atleast_1d(kwargs["EIR (-)"])
+            scaled_eir = original_eir * (compressor_w / (capacities[-1] * original_eir[-1]))
+            kwargs["EIR (-)"] = scaled_eir.tolist() if len(scaled_eir) > 1 else float(scaled_eir[0])
+        if calculator_minimum_modulation is not None:
+            kwargs["use_ideal_capacity"] = True
+            kwargs["Minimum Capacity (W)"] = capacities[-1] * calculator_minimum_modulation
+        super().__init__(**kwargs)
+
+
+class CalculatorHeater(CalculatorHVAC, ASHPHeater):
+    pass
+
+
+class CalculatorCooler(CalculatorHVAC, ASHPCooler):
+    pass
+
+
+class CalculatorDryer(EventBasedLoad):
+    end_use = "Clothes Dryer"
+
+    def __init__(self, calculator_max_deferral=0, **kwargs):
+        self.max_deferral = dt.timedelta(minutes=calculator_max_deferral)
+        super().__init__(**kwargs)
+
+    def can_defer(self, sim_time, *, baseline_sample=False):
+        if (self.in_event and not baseline_sample) or self.event_start != sim_time:
+            return False
+        original_start = self.all_events.loc[self.event_index, "start_time"]
+        if self.event_start + self.time_res > original_start + self.max_deferral:
+            return False
+        if self.event_index + 1 < len(self.all_events):
+            next_start = self.all_events.loc[self.event_index + 1, "start_time"]
+            if self.event_end + self.time_res > next_start:
+                return False
+        return self.event_end > self.event_start
+
+    def extract_events(self, eq_powers, **kwargs):
+        events = super().extract_events(eq_powers, **kwargs)
+        duration = kwargs.get("calculator_cycle_duration")
+        energy = kwargs.get("calculator_cycle_energy")
+        rating = kwargs.get("calculator_rated_power")
+        if events.empty:
+            return events
+        if duration is not None:
+            duration = max(self.time_res, pd.Timedelta(minutes=duration).round(self.time_res))
+            # Preserve scheduled starts when possible, and serialize overlapping cycles.
+            end = events["start_time"].iloc[0]
+            for index, start in events["start_time"].items():
+                start = max(start, end)
+                end = start + duration
+                events.loc[index, ["start_time", "end_time"]] = [start, end]
+        if energy is not None:
+            hours = (events["end_time"] - events["start_time"]).dt.total_seconds() / 3600
+            events["power"] = energy / hours
+            if rating is not None and (events["power"] > rating + 1e-9).any():
+                raise ValueError("Dryer cycle energy and duration require power above its rating")
+        elif rating is not None:
+            events["power"] = rating
+        return events
+
+
+def ev_charging_floor_kw(ev, sim_time, *, baseline_sample=False):
+    if hasattr(ev, "charging_floor_kw") and sim_time is not None:
+        soc = ev.soc
+        if baseline_sample:
+            # OCHRE advances SOC before B1 reads the completed timestep.
+            hours = ev.time_res.total_seconds() / 3600
+            soc -= ev.electric_kw * ev.charging_efficiency * hours / ev.capacity
+        return ev.charging_floor_kw(sim_time, soc)
+    return 0.0
+
+
+def hvac_regulation_limits(temperature, heating, settings):
+    """Return eligibility for load-up and shed at the indoor comfort limits."""
+    lower = settings.get("HVAC_MIN_TEMPERATURE_C", -np.inf)
+    upper = settings.get("HVAC_MAX_TEMPERATURE_C", np.inf)
+    return (temperature < upper, temperature > lower) if heating else (
+        temperature > lower, temperature < upper
+    )
 
 
 def _ev_generate_results(ev):
     """Handle paused charging in OCHRE's verbosity-7 charge-time diagnostic."""
-    if ev.verbosity < 7 or ev.max_power_ctrl != 0:
+    if ev.verbosity < 7 or (ev.max_power_ctrl != 0 and not isinstance(ev, CalculatorEV)):
         return ElectricVehicle.generate_results(ev)
     # Skip only the upstream diagnostic that divides by the zero power limit.
     # Restore verbosity even on failure; physical charging controls stay intact.
@@ -44,7 +190,9 @@ def _ev_generate_results(ev):
     results[f"{ev.end_use} Start Time"] = ev.event_start
     results[f"{ev.end_use} End Time"] = ev.event_end
     results[f"{ev.end_use} Remaining Charge Time (min)"] = (
-        0.0 if ev.soc >= 1 else float("inf")
+        0.0 if ev.soc >= 1 else
+        (1 - ev.soc) * ev.capacity / (ev.max_power_ctrl * ev.charging_efficiency) * 60
+        if ev.max_power_ctrl else float("inf")
     )
     return results
 
@@ -131,6 +279,7 @@ def response_delays(home_seed, config):
             "HVAC": "HVAC",
             "EV": "EV",
             "Dryer": "Dryer",
+            "Battery": "Battery",
         }[selected_device]
 
         delays[command_device] = response_s
@@ -138,7 +287,7 @@ def response_delays(home_seed, config):
     return delays
 
 
-def load_configuration(Season, Weekday, REG_TYPE, Output_Folder):
+def load_configuration(Season, Weekday, Output_Folder):
     #########################################
     # USER SETTINGS
     #########################################
@@ -158,7 +307,7 @@ def load_configuration(Season, Weekday, REG_TYPE, Output_Folder):
 
     # working folder
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    fl_dir = os.path.dirname(script_dir)
+    fl_dir = str(Path(script_dir).parent.parent)
     WORKING_DIR = os.path.dirname(fl_dir)
     INPUT_DIR = os.path.join(fl_dir, Input_folder, "bldg")
     WEATHER_DIR = os.path.join(fl_dir, "Weather")
@@ -166,33 +315,19 @@ def load_configuration(Season, Weekday, REG_TYPE, Output_Folder):
     XML_ADDRESS = "home.xml"
     CSV_ADDRESS = "in.schedules.csv"
 
-    # REG_TYPE = 'RegA'
-    # The calculator-owned signal folder is the direct parent of HPWH.
-    REG_DIR = os.path.join(script_dir, "Reg Sig")
-    REG_ADDRESS = f"{REG_TYPE}-ochre.csv"
-
     # Simulation parameters
-    # if Season == "Spring":
-    #     if Weekday:
-    #         Start = dt.datetime(2018, 4, 11, 0, 0)
-    #     else:
-    #         Start = dt.datetime(2018, 4, 15, 0, 0)
-    if Season == "Summer":
-        if Weekday:
-            Start = dt.datetime(2018, 7, 18, 0, 0)
-        else:
-            Start = dt.datetime(2018, 7, 22, 0, 0)
-    # if Season == "Fall":
-    #     if Weekday:
-    #         Start = dt.datetime(2018, 10, 17, 0, 0)
-    #     else:
-    #         Start = dt.datetime(2018, 10, 21, 0, 0)
-    if Season == "Winter":
-        if Weekday:
-            Start = dt.datetime(2018, 1, 17, 0, 0)
-        else:
-            Start = dt.datetime(2018, 1, 21, 0, 0)
-    # Start = dt.datetime(2018, 8, 11, 0, 0)
+    # Choose the warm-up date so day two matches the requested day type.
+    season_dates = {
+        "Spring": (4, 11, 14),
+        "Summer": (7, 18, 21),
+        "Fall": (10, 17, 20),
+        "Winter": (1, 17, 20),
+    }
+    if Season not in season_dates:
+        raise ValueError("Season must be Spring, Summer, Fall, or Winter.")
+    month, weekday_start, weekend_start = season_dates[Season]
+    # A Saturday warm-up keeps day two on a weekend.
+    Start = dt.datetime(2018, month, weekday_start if Weekday else weekend_start)
     Duration = 2  # days
     t_res = 1  # minutes
 
@@ -510,7 +645,6 @@ def load_configuration(Season, Weekday, REG_TYPE, Output_Folder):
         "HEAT_TbaselineC": HEAT_TbaselineC,
         "HEAT_TdeadbandC": HEAT_TdeadbandC,
         "HEAT_TinitC": HEAT_TinitC,
-        "REG_TYPE": REG_TYPE,
         "REG_SIGNAL": REG_SIGNAL,
         "MIN_HOLD_STEPS": MIN_HOLD_STEPS,
         "MIN_HOLD_MINUTES": MIN_HOLD_MINUTES,
@@ -531,10 +665,8 @@ def load_configuration(Season, Weekday, REG_TYPE, Output_Folder):
         # Runtime settings do not change the physical model or control cadence.
         "FLEET_WORKERS": 2,
         "NUMERICAL_THREADS": 1,
-        "REG_DIR": REG_DIR,
-        "REG_ADDRESS": REG_ADDRESS,
         "OUTPUT_FOLDER": Output_Folder,
-        "RESULTS_DIR": str(Path(__file__).resolve().parent / Output_Folder),
+        "RESULTS_DIR": str(Path(__file__).resolve().parent.parent / Output_Folder),
     }
 
 
@@ -545,7 +677,7 @@ def load_configuration_hardcoded():
 
     filename = 'Combo_WH_HVAC_Dryer_EV_Battery_TEST_3'
 
-    Input_folder = "Combo All Input Files"
+    Input_folder = "Combo Regulation All Input Files"
 
     # Original OCHRE defaults folder
     ochre_dir = Path(ochre.__file__).resolve().parent
@@ -558,7 +690,7 @@ def load_configuration_hardcoded():
 
     # working folder
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    fl_dir = os.path.dirname(script_dir)
+    fl_dir = str(Path(script_dir).parent.parent)
     WORKING_DIR = os.path.dirname(fl_dir)
     INPUT_DIR = os.path.join(fl_dir, Input_folder, "bldg")
     WEATHER_DIR = os.path.join(fl_dir, "Weather")
@@ -1176,6 +1308,18 @@ def build_equip(home_path, config):
         }
         if config.get("DEVICE_TYPE") == "HPWH":
             physical = config["DEVICE_PARAMETERS"].get("physical", {})
+            efficiency = physical.get("rated_efficiency")
+            if efficiency is not None:
+                if efficiency.get("type") != "COP":
+                    raise ValueError("HPWH rated_efficiency type must be COP")
+                cop_value = efficiency.get("value")
+                if isinstance(cop_value, bool):
+                    raise ValueError("HPWH COP must be finite and positive")
+                cop = float(cop_value)
+                if not np.isfinite(cop) or cop <= 0:
+                    raise ValueError("HPWH COP must be finite and positive")
+                equipment["Water Heating"]["HPWH COP (-)"] = cop
+
             compressor_w = physical.get("rated_compressor_power_w")
 
             if compressor_w is not None:
@@ -1196,12 +1340,34 @@ def build_equip(home_path, config):
         charger_kw = get_ev_charger_power(hpxml_file, config["DEFAULT_CHARGER_POWER_KW"])
         capacity_kwh = get_ev_capacity_or_range(hpxml_file, config["DEFAULT_CAPACITY_KWH"])
         home_info.update(home_charger_kw=charger_kw, home_ev_capacity=capacity_kwh)
+        capacity_kwh = config.get("EV_BATTERY_CAPACITY_KWH", capacity_kwh)
+        home_info["home_ev_capacity"] = capacity_kwh
         equipment["EV"] = {
             "vehicle_type": "BEV",
             "capacity": capacity_kwh,
             "charging_level": "Level 2" if charger_kw > 10 else "Level 1",
             "max_power": charger_kw,
         }
+        if "EV_CHARGING_EFFICIENCY" in config or "EV_FLEXIBILITY" in config:
+            equipment["EV"].update(equipment_class=CalculatorEV,
+                                   charging_efficiency=config.get("EV_CHARGING_EFFICIENCY", EV_EFFICIENCY),
+                                   usable_flexibility=config.get("EV_FLEXIBILITY", 1.0))
+    if config.get("DEVICE_TYPE") == "HVAC":
+        power = config.get("HVAC_RATED_POWER_W")
+        modulation = config.get("HVAC_MINIMUM_MODULATION")
+        if power is not None or modulation is not None:
+            for cls, original in ((CalculatorHeater, ASHPHeater), (CalculatorCooler, ASHPCooler)):
+                equipment[original.name] = dict(equipment_class=cls,
+                                               calculator_rated_power=power,
+                                               calculator_minimum_modulation=modulation)
+    if config.get("DEVICE_TYPE") == "Dryer":
+        dryer_options = {
+            "calculator_cycle_duration": config.get("DRYER_CYCLE_DURATION_MIN"),
+            "calculator_cycle_energy": config.get("DRYER_CYCLE_ENERGY_KWH"),
+            "calculator_rated_power": config.get("DRYER_RATED_POWER_KW"),
+            "calculator_max_deferral": config.get("DRYER_MAX_DEFERRAL_MIN", 0),
+        }
+        equipment["Clothes Dryer"] = dict(equipment_class=CalculatorDryer, **dryer_options)
     return equipment, home_info
 
 
@@ -1245,12 +1411,21 @@ def init_home(home_path, config, schedule_file, run_kind="baseline"):
     home_seed = int(digits) if digits else 0
     random.seed(home_seed)
     np.random.seed(home_seed)
+    xml_path = os.path.join(home_path, config["XML_ADDRESS"])
+    envelope = {}
+    if "HVAC_BUILDING_THERMAL_CAPACITY" in config:
+        properties, _ = load_hpxml(hpxml_file=xml_path)
+        zones = properties["zones"]
+        volume = zones["Indoor"]["Volume (m^3)"]
+        thermal_kj_per_c = config["HVAC_BUILDING_THERMAL_CAPACITY"] * 3600 * 1.8
+        zones["Indoor"]["Thermal Mass Multiplier"] = thermal_kj_per_c / (volume * rho_air * cp_air)
+        envelope["zones"] = zones
     dwelling = Dwelling(
         name=f"{run_kind}_{home_name}",
         start_time=config["Start"],
         time_res=dt.timedelta(minutes=config["t_res"]),
         duration=dt.timedelta(days=config["Duration"]),
-        hpxml_file=os.path.join(home_path, config["XML_ADDRESS"]),
+        hpxml_file=xml_path,
         hpxml_schedule_file=os.fspath(schedule_file),
         weather_file=config["WEATHER_FILE"],
         verbosity=7,
@@ -1261,6 +1436,7 @@ def init_home(home_path, config, schedule_file, run_kind="baseline"):
         save_status=False,
         seed=home_seed,
         Equipment=equipment,
+        Envelope=envelope,
     )
     for eq in dwelling.equipment.values():
         if isinstance(eq, ElectricVehicle):
@@ -1400,27 +1576,8 @@ def save_sig(reg_sig, REG_DIR, REG_TYPE):
 REG_SIGNAL = pd.Series(dtype=float)
 
 
-def configure_regulation(reg_type, REG_DIR, Start, Duration, t_res, sine_freq):
-    """Select and load the regulation signal used by this B2 run."""
-    # global REG_TYPE, REG_ADDRESS, REG_SIGNAL
-
-    normalized_types = {"rega": "RegA", "regd": "RegD"}
-    try:
-        selected_type = normalized_types[str(reg_type).strip().lower()]
-    except KeyError as exc:
-        raise ValueError(
-            f"reg_type must be 'RegA' or 'RegD'; received {reg_type!r}."
-        ) from exc
-
-    # signal_file = os.path.join(REG_DIR, f"{selected_type}-ochre.csv")
-    # if not os.path.isfile(signal_file):
-    #     raise FileNotFoundError(f"Regulation signal file not found: {signal_file}")
-
-    REG_TYPE = selected_type
-    REG_ADDRESS = f"{REG_TYPE}-ochre.csv"
-    # REG_SIGNAL = signal_aggregator_mean(REG_DIR, REG_ADDRESS, REG_TYPE, Start, Duration, t_res)
-
-
+def configure_regulation(Start, Duration, t_res, sine_freq):
+    """Generate the single sine regulation signal used by B2."""
     # Frequency is cycles per minute; sample at the actual simulation cadence.
     sine_freq = float(sine_freq)
     if not np.isfinite(sine_freq) or sine_freq <= 0:
@@ -1452,6 +1609,7 @@ def apply_device_parameters(
         "HVAC": "HVAC_SIMULATION",
         "EV": "EV_SIMULATION",
         "Dryer": "DRYER_SIMULATION",
+        "Battery": "BATTERY_SIMULATION",
     }
 
     if device_type not in device_flags:
@@ -1471,7 +1629,7 @@ def apply_device_parameters(
 
     # Select which end use participates in the study.
     # OFF does not remove other equipment from the dwelling.
-    for flag in set(device_flags.values()) | {"BATTERY_SIMULATION"}:
+    for flag in set(device_flags.values()):
         settings[flag] = "OFF"
 
     settings[device_flags[device_type]] = "ON"
@@ -1490,8 +1648,8 @@ def apply_device_parameters(
 
     controller = parameters.get("controller", {})
 
-    def numeric(key, minimum, allow_equal=True):
-        value = controller.get(key)
+    def numeric(key, minimum, allow_equal=True, fields=controller):
+        value = fields.get(key)
         if value is None:
             return None
 
@@ -1529,6 +1687,76 @@ def apply_device_parameters(
         settings["EFFECTIVE_CONTROL_INTERVAL_S"] = (
             settings["CONTROL_INTERVAL_STEPS"] * timestep_s
         )
+
+    if device_type == "Battery":
+        physical = parameters.get("physical", {})
+        battery = settings["BATTERY_PARAMS"]
+        rated_power = numeric("rated_power_kw", 0, allow_equal=False, fields=physical)
+        usable_energy = numeric("usable_energy_capacity_kwh", 0, allow_equal=False, fields=physical)
+        recovery_rate = numeric("recovery_rate_kw", 0)
+        soc_range = controller.get("soc_operating_range_pct")
+        if soc_range is not None:
+            if isinstance(soc_range, (list, tuple)):
+                if len(soc_range) != 2 or any(isinstance(value, bool) for value in soc_range):
+                    raise ValueError("Battery SOC range must have two percentage endpoints")
+                low, high = map(float, soc_range)
+            else:
+                width = numeric("soc_operating_range_pct", 0, allow_equal=False)
+                low, high = 50 - width / 2, 50 + width / 2
+            if not 0 <= low < high <= 100:
+                raise ValueError("Battery SOC range must satisfy 0 <= minimum < maximum <= 100")
+            battery.update(soc_min=low / 100, soc_max=high / 100,
+                           soc_init=(low + high) / 200)
+        soc_span = battery["soc_max"] - battery["soc_min"]
+        if usable_energy is not None:
+            battery["capacity_kwh"] = usable_energy / soc_span
+        if rated_power is not None:
+            battery["capacity"] = rated_power
+        rated_power = battery["capacity"]
+        if recovery_rate is not None:
+            if recovery_rate > rated_power:
+                raise ValueError("Battery recovery rate cannot exceed rated power")
+            settings["BATTERY_RECOVERY_RATE_KW"] = recovery_rate
+        for mode, fraction in (
+            ("ALU", 1.0), ("LU", 0.25), ("SHED", -0.25),
+            ("CP", -0.5), ("GE", -1.0),
+        ):
+            settings[f"P_Battery_{mode}_KW"] = fraction * rated_power
+
+    physical = parameters.get("physical", {})
+    device_fields = {
+        "HVAC": [
+            ("rated_electrical_power_w", "HVAC_RATED_POWER_W", physical, 0, False, None),
+            ("effective_building_thermal_capacity_kwh_per_f", "HVAC_BUILDING_THERMAL_CAPACITY", physical, 0, False, None),
+            ("minimum_modulation_pct", "HVAC_MINIMUM_MODULATION", controller, 0, True, 100),
+        ],
+        "EV": [
+            ("maximum_battery_capacity_kwh", "EV_BATTERY_CAPACITY_KWH", physical, 0, False, None),
+            ("charging_efficiency_pct", "EV_CHARGING_EFFICIENCY", physical, 0, False, 100),
+            ("usable_battery_flexibility_pct", "EV_FLEXIBILITY", controller, 0, True, 100),
+        ],
+        "Dryer": [
+            ("rated_power_kw", "DRYER_RATED_POWER_KW", physical, 0, False, None),
+            ("cycle_energy_kwh", "DRYER_CYCLE_ENERGY_KWH", physical, 0, False, None),
+            ("typical_cycle_duration_min", "DRYER_CYCLE_DURATION_MIN", physical, 0, False, None),
+            ("maximum_deferral_time_min", "DRYER_MAX_DEFERRAL_MIN", controller, 0, True, None),
+        ],
+    }
+    for field, key, fields, minimum, allow_equal, percent in device_fields.get(device_type, ()):
+        value = numeric(field, minimum, allow_equal=allow_equal, fields=fields)
+        if value is not None:
+            if percent is not None and value > percent:
+                raise ValueError(f"{field} must be at most {percent}%")
+            settings[key] = value / percent if percent else value
+
+    if device_type == "HVAC":
+        for field, key in (("min_indoor_temperature_f", "HVAC_MIN_TEMPERATURE_C"),
+                           ("max_indoor_temperature_f", "HVAC_MAX_TEMPERATURE_C")):
+            if controller.get(field) is not None:
+                value = numeric(field, -459.67, allow_equal=False)
+                settings[key] = (value - 32) * 5 / 9
+        if settings.get("HVAC_MIN_TEMPERATURE_C", -np.inf) >= settings.get("HVAC_MAX_TEMPERATURE_C", np.inf):
+            raise ValueError("Minimum indoor temperature must be below maximum")
 
     if device_type in {"HPWH", "ERWH"}:
         # Use the top tank node to check the minimum service temperature.
