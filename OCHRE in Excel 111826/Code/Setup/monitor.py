@@ -10,6 +10,20 @@ import re
 from tkinter.scrolledtext import ScrolledText
 
 
+# Approximate shares of total run time, including gaps for stage transitions.
+OVERALL_PROGRESS_RANGES = {
+    "A3 preparing XML files": (0, 5),
+    "B1 initializing homes": (5, 10),
+    "B1 baseline simulation": (10, 41),
+    "B1 finalizing homes": (41, 45),
+    "B2 initializing homes": (45, 50),
+    "B2 regulation simulation": (50, 86),
+    "B2 finalizing homes": (86, 90),
+    "C1 preparing data tables": (90, 94),
+    "C4 calculating delay and correlation": (96, 99),
+}
+
+
 def pin_to_top(root, on_top):
     if on_top:
         root.attributes("-topmost", True)
@@ -47,11 +61,14 @@ def make_monitor(cmd_list):
 
     root = tk.Tk()
     root.title("Monitor")
-    root.geometry("350x250")
+    root.geometry("420x320")
 
     status = tk.StringVar(root)
     time_remaining = tk.StringVar(root)
     progress = tk.DoubleVar(root)
+    overall_progress = tk.DoubleVar(root)
+    overall_text = tk.StringVar(root, value="Overall simulation · 0% · ETR estimating...")
+    overall_started = None
     on_top = tk.BooleanVar(root)
     show_output = tk.BooleanVar(root, value=False)
 
@@ -69,6 +86,16 @@ def make_monitor(cmd_list):
         r"(?P<completed>\d+)/(?P<total>\d+)\s*"
         r"\[Elapsed:\s*[^|]+\|\s*ETR:\s*(?P<remaining>[^\]]+)\]"
     )
+
+    def set_overall(percent):
+        if percent <= overall_progress.get():
+            return
+        overall_progress.set(percent)
+        seconds = round((time.monotonic() - overall_started) * (100 - percent) / percent)
+        hours, remainder = divmod(seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        remaining = f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:02d}:{seconds:02d}"
+        overall_text.set(f"Overall simulation · {int(percent)}% · ETR {remaining}")
 
     def stop_simulation():
         nonlocal stop_requested, stop_process
@@ -138,9 +165,12 @@ def make_monitor(cmd_list):
         if stop_requested:
             status.set("Stopped - you can close this window")
             time_remaining.set("Time remaining: stopped")
+            overall_text.set(f"Overall simulation · {int(overall_progress.get())}% · Stopped")
             return
 
         if return_code == 0:
+            overall_progress.set(100)
+            overall_text.set("Overall simulation · 100% · Complete")
             status.set("Finished - you can close this window")
             messagebox.showinfo(
                 "Simulation complete",
@@ -149,6 +179,7 @@ def make_monitor(cmd_list):
             )
             root.destroy()
         else:
+            overall_text.set(f"Overall simulation · {int(overall_progress.get())}% · Failed")
             status.set("Failed - you can close this window")
             show_output.set(True)
             toggle_output()
@@ -160,6 +191,7 @@ def make_monitor(cmd_list):
             )
 
     def update_output():
+        nonlocal overall_started
         for _ in range(100):
             try:
                 message = queueue.get_nowait()
@@ -171,6 +203,17 @@ def make_monitor(cmd_list):
             output_text.see("end")
             output_text.configure(state="disabled")
 
+            if message.startswith("OCHRE_OVERALL|"):
+                if sim_running and not stop_requested:
+                    _, percent, stage = message.split("|", 2)
+                    if overall_started is None:
+                        overall_started = time.monotonic()
+                    set_overall(int(percent))
+                    status.set(stage)
+                    progress.set(0)
+                    time_remaining.set("Time remaining: estimating...")
+                continue
+
             if message.startswith("STAGE|"):
                 if sim_running:
                     status.set(message.split("|", 1)[1])
@@ -180,19 +223,23 @@ def make_monitor(cmd_list):
 
             match = progress_pattern.search(message.strip())
 
-            if match:
+            if match and sim_running and not stop_requested:
                 completed = int(match.group("completed"))
                 total = int(match.group("total"))
                 remaining = match.group("remaining").strip()
 
+                description = match.group("description").strip()
                 if total > 0:
-                    progress.set(completed / total * 100)
+                    fraction = completed / total
+                    progress.set(fraction * 100)
+                    bounds = OVERALL_PROGRESS_RANGES.get(description)
+                    if overall_started is not None and bounds is not None:
+                        start, end = bounds
+                        set_overall(start + (end - start) * fraction)
 
                 time_remaining.set(f"Time remaining: {remaining}")
 
-                if sim_running:
-                    description = match.group("description").strip()
-                    status.set(f"{description}: {completed}/{total}")
+                status.set(f"{description}: {completed}/{total}")
 
         root.after(100, update_output)
     # def update():
@@ -220,6 +267,12 @@ def make_monitor(cmd_list):
     label_status = ttk.Label(root, text="Status:", textvariable=status)
     label_time = ttk.Label(root, text="Time Remaining:", textvariable=time_remaining)
     checkbutton = ttk.Checkbutton(root, text="Pin to Top?", variable=on_top, command=lambda: pin_to_top(root, on_top.get()))
+
+    ttk.Label(root, textvariable=overall_text).pack(pady=(10, 0))
+    ttk.Progressbar(root, maximum=100, variable=overall_progress).pack(
+        fill="x", padx=10, pady=(4, 8),
+    )
+    ttk.Label(root, text="Current stage").pack()
 
     progress_frame = ttk.Frame(root)
     progress_frame.pack(fill="x", padx=10, pady=10)
@@ -277,7 +330,7 @@ def make_monitor(cmd_list):
 
     def toggle_output():
         if show_output.get():
-            root.geometry("650x450")
+            root.geometry("650x520")
             output_text.pack(
                 fill="both",
                 expand=True,
@@ -286,7 +339,7 @@ def make_monitor(cmd_list):
             )
         else:
             output_text.pack_forget()
-            root.geometry("350x250")
+            root.geometry("420x320")
 
     style = ttk.Style(root)
     style.configure(

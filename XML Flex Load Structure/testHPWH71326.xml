@@ -3,13 +3,13 @@
     <Version>2</Version>
 
     <Inputs>
-        <CompPwr>0.45</CompPwr>
-        <ResistPwr>4.5</ResistPwr>
+        <CompPwr>450</CompPwr>
+        <ResistPwr>4500</ResistPwr>
         <TankVol>46</TankVol>
         <MaxWaterTemp>150</MaxWaterTemp>
         <MinWaterTemp>95</MinWaterTemp>
         <COPUEF>3.45</COPUEF>
-        <HeatCap>2.0</HeatCap>
+        <HeatCap>6824</HeatCap>
         <ResponseTime>30</ResponseTime>
         <CntrlInt>120</CntrlInt>
     </Inputs>

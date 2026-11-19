@@ -12,6 +12,7 @@ import argparse
 import math
 import os
 import shutil
+from time import monotonic
 import datetime as dt
 import pandas as pd
 import numpy as np
@@ -152,6 +153,29 @@ def aggregate_results(homes, work_dir):
         df_base_all.to_csv(os.path.join(work_dir, filename + "_baseline.csv"), index=False)
     print("Aggregated CSVs written!")
 
+def advance_dwelling(home, phase, current_time, control_signal=None):
+    try:
+        return home["dw"].update(control_signal=control_signal)
+    except Exception as exc:
+        name = os.path.basename(home["path"])
+        raise RuntimeError(f"{phase} failed for {name} at {current_time}: {exc}") from exc
+
+
+def fleet_timesteps(sim_times, phase):
+    """Report completed simulation minutes periodically, even in quiet stretches."""
+    last_report = monotonic()
+    for step_index, current_time in enumerate(sim_times):
+        yield step_index, current_time
+        now = monotonic()
+        if now - last_report >= 10 or step_index + 1 == len(sim_times):
+            print(
+                f"{phase}: completed {step_index + 1}/{len(sim_times)} "
+                f"timesteps through {current_time}",
+                flush=True,
+            )
+            last_report = now
+
+
 def run_fleet_feedback(fleet_data, sim_times):
     step_hours = t_res / 60
     previous_average_power_kw = None
@@ -160,7 +184,7 @@ def run_fleet_feedback(fleet_data, sim_times):
     num_homes = len(fleet_data)
     vpp_state_log = []
 
-    for step_index, current_time in enumerate(sim_times):
+    for step_index, current_time in fleet_timesteps(sim_times, "Controlled"):
         feedback_kw = previous_average_power_kw
         is_vpp_active = VPP_START_TIME <= current_time.time() < VPP_END_TIME
 
@@ -222,7 +246,7 @@ def run_fleet_feedback(fleet_data, sim_times):
                 raise ValueError(f"Controlled dwelling is out of sync for {h['path']} at {current_time}.")
 
             if h["dryer"] is None:
-                results = dw.update()
+                results = advance_dwelling(h, "Controlled", current_time)
             else:
                 power_fraction = DUTY_CYCLE_FRACTION if h["mode"] == "SHED" else 1.0
                 command_kw = min(h["max_kw"] * power_fraction, h["queued_kwh"] / step_hours)
@@ -230,8 +254,9 @@ def run_fleet_feedback(fleet_data, sim_times):
                     command_kw = 0.0
                     h["pending_off"] = False
 
-                results = dw.update(
-                    control_signal={"Clothes Dryer": {"P Setpoint": command_kw}}
+                results = advance_dwelling(
+                    h, "Controlled", current_time,
+                    control_signal={"Clothes Dryer": {"P Setpoint": command_kw}},
                 )
                 actual_dryer_kw = h["dryer"].electric_kw
                 h["queued_kwh"] = max(0.0, h["queued_kwh"] - actual_dryer_kw * step_hours)
@@ -331,9 +356,9 @@ if __name__ == "__main__":
     sim_times = baseline_dwellings[0]["dw"].sim_times
     
     # Run Baseline Loop
-    for t in sim_times:
+    for _, current_time in fleet_timesteps(sim_times, "Baseline"):
         for b in baseline_dwellings:
-            b["dw"].update()
+            advance_dwelling(b, "Baseline", current_time)
             
     # Extract True Baseline Data
     baseline_data = {}

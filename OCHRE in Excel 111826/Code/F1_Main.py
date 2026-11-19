@@ -71,7 +71,11 @@ def main(output_folder, parameters, show_plots=False):
     selected_parameters = parameters["device_parameters"]
     selected_device = parameters["selected_device"]
 
+    def report_overall(percent, stage):
+        print(f"OCHRE_OVERALL|{percent}|{stage}", flush=True)
+
     # Isolate prepared inputs so another launch cannot overwrite this B1/B2 pair.
+    report_overall(0, "Preparing inputs")
     prepared_inputs = adj_xml.main(
         device_type=selected_device,
         parameters=selected_parameters,
@@ -104,6 +108,7 @@ def main(output_folder, parameters, show_plots=False):
         regulation_duration_minutes=regulation_duration_minutes,
     )
 
+    report_overall(5, "Running baseline simulation")
     baseline_summary, run_id = baseline.main()
     if max(baseline_summary["up_regulation_capacity_kw"],
            baseline_summary["down_regulation_capacity_kw"]) == 0:
@@ -127,11 +132,13 @@ def main(output_folder, parameters, show_plots=False):
 
     regulation_config["REGULATION_CAPACITY_MODE"] = "auto"
     regulation_config["REGULATION_CAPACITY_FRACTION"] = 1.0
+    report_overall(45, "Running regulation simulation")
     regulation_summary, results_dir = regulation.main(
         baseline_run_id=run_id,
         sine_freq=sine_freq,
     )
 
+    report_overall(90, "Processing results")
     c1.main(results_dir)
     up_cap = regulation_summary["up_regulation_capacity_kw"]
     down_cap = regulation_summary["down_regulation_capacity_kw"]
@@ -143,8 +150,10 @@ def main(output_folder, parameters, show_plots=False):
     if dispatched_capacity > 0:
         run_dir = Path(results_dir).resolve()
         plot_path = run_dir / "Ready_data" / f"{run_dir.name}_normalized_power_plot.png"
+        report_overall(94, "Generating plot")
         response = c5.main(run_dir=run_dir, no_show=not show_plots, png_path=plot_path)
         if response["Target Delta (kW)"].abs().max() > 1e-9:
+            report_overall(96, "Calculating performance score")
             perf_score = c4.main(run_dir=results_dir)
         else:
             print("No nonzero regulation target in the selected window. Performance score is unavailable.")
