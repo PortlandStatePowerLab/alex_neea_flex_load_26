@@ -148,10 +148,8 @@ def main(output_folder, parameters, show_plots=False):
     perf_score = None
     plot_path = None
     if dispatched_capacity > 0:
-        run_dir = Path(results_dir).resolve()
-        plot_path = run_dir / "Ready_data" / f"{run_dir.name}_normalized_power_plot.png"
         report_overall(94, "Generating plot")
-        response = c5.main(run_dir=run_dir, no_show=not show_plots, png_path=plot_path)
+        response, plot_path = c5.main(run_dir=results_dir, no_show=not show_plots)
         if response["Target Delta (kW)"].abs().max() > 1e-9:
             report_overall(96, "Calculating performance score")
             perf_score = c4.main(run_dir=results_dir)

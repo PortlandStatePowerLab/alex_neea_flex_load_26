@@ -9,7 +9,7 @@ recorded static regulation capacity. Thus, for example, 15 kW of response
 against 20 kW of capacity is plotted as 0.75.
 Adapted from HPWH Regulation Testing 831/HPWH_C3.py.
 Run directly for the latest completed B1/B2 pair, or pass --run-dir / --run-id.
-Use --no-show to save PDF plots without opening a window. Outputs go to Ready_data
+Use --no-show to save the PNG plot without opening a window. Outputs go to Ready_data
 inside the selected run. C1 and C2 do not need to be run first.
 Plots show only the regulation period selected by F1, using B2's saved
 regulation window. No best/worst-hour selection is performed.
@@ -36,7 +36,7 @@ import pandas as pd
 RUN_DIR = None  # Default: latest completed B1/B2 pair.
 
 
-def plot_period(response, start, end, rmse, plot_file, y_limit, no_show, png_path=None):
+def plot_period(response, start, end, rmse, plot_file, y_limit, no_show):
     """Save the selected regulation period with both normalized curves."""
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot(response["Time"], response["normalized_actual_response"],
@@ -57,16 +57,15 @@ def plot_period(response, start, end, rmse, plot_file, y_limit, no_show, png_pat
     ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
     fig.autofmt_xdate()
     fig.tight_layout()
-    fig.savefig(plot_file)
-    if png_path is not None:
-        fig.savefig(png_path, dpi=150)
+    fig.savefig(plot_file, dpi=150)
     print(f"Regulation period: {start} to {end} (end exclusive); "
           f"normalized RMSE={rmse:.6f}; plot saved to: {plot_file}")
     if no_show:
         plt.close(fig)
 
 
-def main(run_dir=None, no_show=False, run_id=None, *, png_path=None):
+def main(run_dir=None, no_show=False, run_id=None):
+    """Return the normalized response and the path of the saved PNG."""
     run_dir = resolve_run(RUN_DIR if run_dir is None and run_id is None else run_dir, run_id)
     ready_data_dir = run_dir / "Ready_data"
     ready_data_dir.mkdir(exist_ok=True)
@@ -90,7 +89,7 @@ def main(run_dir=None, no_show=False, run_id=None, *, png_path=None):
     ].copy()
     if response.empty:
         raise ValueError("No tracking samples fall inside the selected regulation period.")
-    prefix = ready_data_dir / run_dir.name
+    prefix = ready_data_dir.resolve() / run_dir.name
     response.to_csv(f"{prefix}_normalized_response.csv", index=False)
     if no_show:
         plt.switch_backend("Agg")
@@ -102,11 +101,11 @@ def main(run_dir=None, no_show=False, run_id=None, *, png_path=None):
         *(float(response[column].abs().max())
           for column in ("normalized_actual_response", "normalized_target_response")),
     )
-    plot_period(response, start, end, rmse,
-                f"{prefix}_normalized_power_plot.pdf", y_limit, no_show, png_path)
+    plot_path = Path(f"{prefix}_normalized_power_plot.png")
+    plot_period(response, start, end, rmse, plot_path, y_limit, no_show)
     if not no_show:
         plt.show()
-    return response
+    return response, plot_path
 
 
 if __name__ == "__main__":
