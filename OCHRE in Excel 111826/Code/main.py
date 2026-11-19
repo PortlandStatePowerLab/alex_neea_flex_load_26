@@ -237,7 +237,7 @@ def read_Excel(pyvals_sheet):
 def write_Excel(calc_sheet, results):
     calc_sheet.range("N29").value = results["dispatched_capacity"] #dispatched capacity
     calc_sheet.range("N30").value = results["performance_score"] #performance score
-    calc_sheet.range("N48").value = results["output_folder"] #output folder
+    calc_sheet.range("C22").value = results["output_folder"] #output folder
 
     plot_name = "OCHRE_Normalized_Regulation_Plot"
     plot_path = results["regulation_plot_path"]
