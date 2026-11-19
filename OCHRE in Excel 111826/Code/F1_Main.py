@@ -104,7 +104,24 @@ def main(output_folder, parameters, show_plots=False):
         regulation_duration_minutes=regulation_duration_minutes,
     )
 
-    _, run_id = baseline.main()
+    baseline_summary, run_id = baseline.main()
+    if max(baseline_summary["up_regulation_capacity_kw"],
+           baseline_summary["down_regulation_capacity_kw"]) == 0:
+        print("Baseline found 0 kW of reliable regulation capacity in both directions. "
+              "Controlled simulation skipped. Performance score is unavailable.")
+        if selected_device == "HPWH":
+            print("Check the HPWH ratings in Excel. Enter compressor and resistance "
+                  "power in W and heating capacity in BTU/hr.")
+        print(f"Baseline results: {baseline_summary['baseline_path']}")
+        return {
+            "output_folder": output_folder,
+            "dispatched_capacity": 0.0,
+            "up_regulation_capacity_kw": 0.0,
+            "down_regulation_capacity_kw": 0.0,
+            "regulation_capacity_mode": "asymmetric",
+            "performance_score": None,
+            "regulation_plot_path": None,
+        }
 
     sine_freq = 1.0 / 60.0
 
@@ -122,8 +139,11 @@ def main(output_folder, parameters, show_plots=False):
     mode = regulation_summary["regulation_capacity_mode"]
     print(f"Regulation capacity ({mode}): +{up_cap:.4f} / -{down_cap:.4f} kW")
     perf_score = None
+    plot_path = None
     if dispatched_capacity > 0:
-        response = c5.main(run_dir=results_dir, no_show=not show_plots)
+        run_dir = Path(results_dir).resolve()
+        plot_path = run_dir / "Ready_data" / f"{run_dir.name}_normalized_power_plot.png"
+        response = c5.main(run_dir=run_dir, no_show=not show_plots, png_path=plot_path)
         if response["Target Delta (kW)"].abs().max() > 1e-9:
             perf_score = c4.main(run_dir=results_dir)
         else:
@@ -137,7 +157,8 @@ def main(output_folder, parameters, show_plots=False):
         "up_regulation_capacity_kw": up_cap,
         "down_regulation_capacity_kw": down_cap,
         "regulation_capacity_mode": mode,
-        "performance_score": perf_score
+        "performance_score": perf_score,
+        "regulation_plot_path": str(plot_path) if plot_path is not None else None,
     }
     
     return results

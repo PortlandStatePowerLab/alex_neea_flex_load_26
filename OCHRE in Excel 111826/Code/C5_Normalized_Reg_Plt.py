@@ -36,7 +36,7 @@ import pandas as pd
 RUN_DIR = None  # Default: latest completed B1/B2 pair.
 
 
-def plot_period(response, start, end, rmse, plot_file, y_limit, no_show):
+def plot_period(response, start, end, rmse, plot_file, y_limit, no_show, png_path=None):
     """Save the selected regulation period with both normalized curves."""
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot(response["Time"], response["normalized_actual_response"],
@@ -58,13 +58,15 @@ def plot_period(response, start, end, rmse, plot_file, y_limit, no_show):
     fig.autofmt_xdate()
     fig.tight_layout()
     fig.savefig(plot_file)
+    if png_path is not None:
+        fig.savefig(png_path, dpi=150)
     print(f"Regulation period: {start} to {end} (end exclusive); "
           f"normalized RMSE={rmse:.6f}; plot saved to: {plot_file}")
     if no_show:
         plt.close(fig)
 
 
-def main(run_dir=None, no_show=False, run_id=None):
+def main(run_dir=None, no_show=False, run_id=None, *, png_path=None):
     run_dir = resolve_run(RUN_DIR if run_dir is None and run_id is None else run_dir, run_id)
     ready_data_dir = run_dir / "Ready_data"
     ready_data_dir.mkdir(exist_ok=True)
@@ -101,7 +103,7 @@ def main(run_dir=None, no_show=False, run_id=None):
           for column in ("normalized_actual_response", "normalized_target_response")),
     )
     plot_period(response, start, end, rmse,
-                f"{prefix}_normalized_power_plot.pdf", y_limit, no_show)
+                f"{prefix}_normalized_power_plot.pdf", y_limit, no_show, png_path)
     if not no_show:
         plt.show()
     return response

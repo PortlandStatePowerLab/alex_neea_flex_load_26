@@ -238,8 +238,19 @@ def write_Excel(calc_sheet, results):
     calc_sheet.range("N29").value = results["dispatched_capacity"] #dispatched capacity
     calc_sheet.range("N30").value = results["performance_score"] #performance score
     calc_sheet.range("N48").value = results["output_folder"] #output folder
-    
 
+    plot_name = "OCHRE_Normalized_Regulation_Plot"
+    plot_path = results["regulation_plot_path"]
+    if plot_path is not None:
+        anchor = calc_sheet.range("R2")
+        picture = calc_sheet.pictures.add(
+            plot_path, name=plot_name, update=True, anchor=anchor, width=504,
+        )
+        # xlwings preserves the old position on update. Reset it to R2.
+        picture.left = anchor.left
+        picture.top = anchor.top
+    elif plot_name in calc_sheet.pictures:
+        calc_sheet.pictures[plot_name].delete()
 
 
 def main():
