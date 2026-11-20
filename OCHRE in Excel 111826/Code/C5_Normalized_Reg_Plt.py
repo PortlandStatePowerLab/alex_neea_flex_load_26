@@ -21,7 +21,6 @@ regulation window. No best/worst-hour selection is performed.
 import argparse
 import json
 from pathlib import Path
-import numpy as np
 
 try:
     from .C3_Normalized_Regulation import resolve_run, load_tracking, load_normalized_response
@@ -36,7 +35,7 @@ import pandas as pd
 RUN_DIR = None  # Default: latest completed B1/B2 pair.
 
 
-def plot_period(response, start, end, rmse, plot_file, y_limit, no_show):
+def plot_period(response, start, end, plot_file, y_limit, no_show):
     """Save the selected regulation period with both normalized curves."""
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot(response["Time"], response["normalized_actual_response"],
@@ -46,20 +45,18 @@ def plot_period(response, start, end, rmse, plot_file, y_limit, no_show):
     ax.axhline(0.0, color="black", linewidth=1, alpha=0.6)
     ax.set_ylim(-y_limit, y_limit)
     ax.set_xlim(start, end)
-    ax.set_title(f"Normalized Regulation Response\n(RMSE = {rmse:.4f})",
-                 fontsize=12)
+    ax.set_title("Normalized Regulation Response", fontsize=12)
     ax.set_xlabel("Time", fontsize=12)
     ax.set_ylabel("Fraction of Static Regulation Capacity", fontsize=12)
     ax.tick_params(axis="both", labelsize=10)
-    ax.legend(loc="best", fontsize=10, frameon=True, facecolor="white", framealpha=0.9)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.23), fontsize=10, frameon=True, facecolor="white", framealpha=0.9)
     locator = mdates.AutoDateLocator(minticks=4, maxticks=8)
     ax.xaxis.set_major_locator(locator)
     ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
-    fig.autofmt_xdate()
     fig.tight_layout()
     fig.savefig(plot_file, dpi=150)
     print(f"Regulation period: {start} to {end} (end exclusive); "
-          f"normalized RMSE={rmse:.6f}; plot saved to: {plot_file}")
+          f"plot saved to: {plot_file}")
     if no_show:
         plt.close(fig)
 
@@ -93,16 +90,13 @@ def main(run_dir=None, no_show=False, run_id=None):
     response.to_csv(f"{prefix}_normalized_response.csv", index=False)
     if no_show:
         plt.switch_backend("Agg")
-    rmse = float(np.sqrt(np.mean(
-        (response["normalized_actual_response"] - response["normalized_target_response"]) ** 2
-    )))
     y_limit = 1.1 * max(
         1.0,
         *(float(response[column].abs().max())
           for column in ("normalized_actual_response", "normalized_target_response")),
     )
     plot_path = Path(f"{prefix}_normalized_power_plot.png")
-    plot_period(response, start, end, rmse, plot_path, y_limit, no_show)
+    plot_period(response, start, end, plot_path, y_limit, no_show)
     if not no_show:
         plt.show()
     return response, plot_path
