@@ -177,7 +177,15 @@ def read_Excel(pyvals_sheet):
         raise ValueError("'Python Values'!C3 must contain Weekday or Weekend.")
     weekday = bool(day_type)
     regulation_start_time = read_regulation_start_time(pyvals_sheet.range("C4").value)
-    regulation_duration_minutes = pyvals_sheet.range("C5").value
+    regulation_duration_hours = pyvals_sheet.range("C5").value
+    if (
+        isinstance(regulation_duration_hours, bool)
+        or not isinstance(regulation_duration_hours, (int, float))
+        or not math.isfinite(regulation_duration_hours)
+        or regulation_duration_hours <= 0
+    ):
+        raise ValueError("Calculator!N38 must contain a positive regulation duration in hours.")
+    regulation_duration_minutes = regulation_duration_hours * 60
     device_label = pyvals_sheet.range("C6").value
     device_names = {
         "hpwh": "HPWH",
